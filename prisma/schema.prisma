@@ -1,0 +1,196 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  avatar    String?
+  role      String   @default("user")
+  tier      String   @default("free")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  calculations CalculationHistory[]
+  savedData    UserSavedData[]
+}
+
+model EquationCategory {
+  id          String    @id @default(cuid())
+  name        String
+  slug        String    @unique
+  icon        String?
+  description String?
+  domain      String
+  order       Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  equations Equation[]
+}
+
+model Equation {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  formula     String
+  description String?
+  category    String
+  domain      String
+  difficulty  String   @default("intermediate")
+  tags        String?
+  reference   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  categoryId String?
+  categoryRef EquationCategory? @relation(fields: [categoryId], references: [id])
+  inputs     EquationInput[]
+  outputs    EquationOutput[]
+}
+
+model EquationInput {
+  id         String  @id @default(cuid())
+  name       String
+  symbol     String
+  unit       String?
+  defaultVal String?
+  min        String?
+  max        String?
+  step       String?
+  order      Int     @default(0)
+
+  equationId String
+  equation   Equation @relation(fields: [equationId], references: [id], onDelete: Cascade)
+}
+
+model EquationOutput {
+  id         String  @id @default(cuid())
+  name       String
+  symbol     String
+  unit       String?
+  formula    String?
+  order      Int     @default(0)
+
+  equationId String
+  equation   Equation @relation(fields: [equationId], references: [id], onDelete: Cascade)
+}
+
+model CalculationPipeline {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  description String?
+  domain      String
+  category    String?
+  difficulty  String   @default("intermediate")
+  icon        String?
+  tags        String?
+  isLocal     Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  steps PipelineStep[]
+}
+
+model PipelineStep {
+  id          String  @id @default(cuid())
+  name        String
+  description String?
+  order       Int
+  formula     String?
+  inputSchema String?
+  outputSchema String?
+  helperText  String?
+
+  pipelineId String
+  pipeline   CalculationPipeline @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+}
+
+model CalculationHistory {
+  id         String   @id @default(cuid())
+  equationId String?
+  pipelineId String?
+  inputs     String
+  outputs    String
+  type       String   @default("equation")
+  createdAt  DateTime @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Course {
+  id          String   @id @default(cuid())
+  title       String
+  slug        String   @unique
+  description String?
+  domain      String
+  level       String   @default("beginner")
+  duration    String?
+  icon        String?
+  image       String?
+  rating      String   @default("0")
+  enrolled    Int      @default(0)
+  order       Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  modules CourseModule[]
+}
+
+model CourseModule {
+  id          String  @id @default(cuid())
+  title       String
+  description String?
+  order       Int
+  duration    String?
+
+  courseId String
+  course   Course  @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  lessons Lesson[]
+}
+
+model Lesson {
+  id          String  @id @default(cuid())
+  title       String
+  description String?
+  type        String  @default("article")
+  content     String?
+  duration    String?
+  order       Int
+  isFree      Boolean @default(true)
+
+  moduleId String
+  module   CourseModule @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+}
+
+model UserSavedData {
+  id        String   @id @default(cuid())
+  key       String
+  value     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, key])
+}
+
+model UnitConversion {
+  id         String  @id @default(cuid())
+  category   String
+  fromUnit   String
+  toUnit     String
+  factor     String
+  offset     String  @default("0")
+  fromSymbol String?
+  toSymbol   String?
+}
