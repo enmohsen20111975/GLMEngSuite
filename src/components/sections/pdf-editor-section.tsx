@@ -15,10 +15,18 @@ import {
   RotateCw, Printer, Save, FolderOpen, Hand, Plus, Trash2, Stamp,
   FileText, MousePointer2, X, Check, MoveVertical
 } from 'lucide-react'
-import type { PDFDocumentProxy } from 'pdfjs-dist'
+// Define PDFDocumentProxy type locally to avoid importing pdfjs-dist at build time
+// (pdfjs-dist uses DOMMatrix which crashes SSR)
+type PDFDocumentProxy = {
+  numPages: number
+  getPage: (num: number) => Promise<{
+    getViewport: (opts: { scale: number }) => { width: number; height: number }
+    render: (opts: { canvasContext: CanvasRenderingContext2D; viewport: { width: number; height: number } }) => { promise: Promise<void> }
+  }>
+}
 
 // Lazy-load pdfjs-dist (avoids DOMMatrix SSR error)
-let pdfjsLib: typeof import('pdfjs-dist') | null = null
+let pdfjsLib: Record<string, unknown> | null = null
 async function getPdfjsLib() {
   if (!pdfjsLib) {
     pdfjsLib = await import('pdfjs-dist')

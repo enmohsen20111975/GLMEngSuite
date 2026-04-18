@@ -135,6 +135,8 @@ interface WorkflowNodeData {
   equationInputs?: EquationInput[]
   equationOutputs?: EquationOutput[]
   inputValues?: Record<string, string>
+  outputValues?: Record<string, string>
+  valueSource?: Record<string, 'manual' | 'auto' | 'propagated'>
   // PROCESS
   processOperation?: string
   // DECISION
@@ -268,7 +270,6 @@ function CalculationNode({ data, id }: NodeProps<Node<WorkflowNodeData>>) {
   const style = NODE_TYPE_STYLES.calculation
   const eqInputs = d.equationInputs || []
   const eqOutputs = d.equationOutputs || []
-  const domainStyle = d.equationName ? DOMAIN_STYLES[ELECTRICAL] : undefined // We'll just use the calc style
 
   return (
     <div className={`px-3 py-2 rounded-xl ${style.bg} border-2 ${style.border} shadow-lg min-w-[180px] max-w-[260px]`}>
@@ -314,26 +315,42 @@ function CalculationNode({ data, id }: NodeProps<Node<WorkflowNodeData>>) {
       {/* Input/Output labels */}
       {eqInputs.length > 0 && (
         <div className="mt-1.5 space-y-0.5">
-          {eqInputs.map(inp => (
-            <div key={inp.symbol} className="text-[9px] text-muted-foreground flex items-center gap-1">
-              <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400" />
-              {inp.symbol} {inp.unit ? `(${inp.unit})` : ''}
-              {d.inputValues?.[inp.symbol] !== undefined && <span className="font-mono ml-1">= {d.inputValues[inp.symbol]}</span>}
-            </div>
-          ))}
+          {eqInputs.map(inp => {
+            const source = d.valueSource?.[inp.symbol]
+            const isAuto = source === 'auto'
+            const isPropagated = source === 'propagated'
+            const isManual = source === 'manual'
+            return (
+              <div key={inp.symbol} className={`text-[9px] text-muted-foreground flex items-center gap-1 ${isAuto ? 'text-emerald-600 dark:text-emerald-400' : isPropagated ? 'text-violet-600 dark:text-violet-400' : ''}`}>
+                <span className={`inline-block w-1.5 h-1.5 rounded-full ${isAuto ? 'bg-emerald-500' : isPropagated ? 'bg-violet-500' : isManual ? 'bg-sky-500' : 'bg-amber-400'}`} />
+                {inp.symbol} {inp.unit ? `(${inp.unit})` : ''}
+                {d.inputValues?.[inp.symbol] !== undefined && d.inputValues[inp.symbol] !== '' && <span className="font-mono ml-1">= {d.inputValues[inp.symbol]}</span>}
+                {isAuto && <span className="ml-0.5 text-[7px] px-0.5 rounded bg-emerald-100 dark:bg-emerald-900/50 text-emerald-600 dark:text-emerald-300">auto</span>}
+                {isPropagated && <span className="ml-0.5 text-[7px] px-0.5 rounded bg-violet-100 dark:bg-violet-900/50 text-violet-600 dark:text-violet-300">linked</span>}
+              </div>
+            )
+          })}
         </div>
       )}
       {eqOutputs.length > 0 && (
         <div className="mt-1 space-y-0.5">
-          {eqOutputs.map(out => (
-            <div key={out.symbol} className="text-[9px] text-muted-foreground flex items-center gap-1 justify-end">
-              {d.computedResult?.[out.symbol] !== undefined && (
-                <span className="font-mono mr-1">= {d.computedResult[out.symbol].toFixed(4)}</span>
-              )}
-              <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400" />
-              {out.symbol} {out.unit ? `(${out.unit})` : ''}
-            </div>
-          ))}
+          {eqOutputs.map(out => {
+            const source = d.valueSource?.[out.symbol]
+            const isAuto = source === 'auto'
+            const isManual = source === 'manual'
+            const displayVal = d.outputValues?.[out.symbol] ?? (d.computedResult?.[out.symbol] !== undefined ? d.computedResult[out.symbol].toFixed(4) : undefined)
+            return (
+              <div key={out.symbol} className={`text-[9px] text-muted-foreground flex items-center gap-1 justify-end ${isAuto ? 'text-emerald-600 dark:text-emerald-400' : ''}`}>
+                {displayVal !== undefined && (
+                  <span className="font-mono mr-1">= {displayVal}</span>
+                )}
+                {isAuto && <span className="mr-0.5 text-[7px] px-0.5 rounded bg-emerald-100 dark:bg-emerald-900/50 text-emerald-600 dark:text-emerald-300">calc</span>}
+                {isManual && <span className="mr-0.5 text-[7px] px-0.5 rounded bg-sky-100 dark:bg-sky-900/50 text-sky-600 dark:text-sky-300">manual</span>}
+                <span className={`inline-block w-1.5 h-1.5 rounded-full ${isAuto ? 'bg-emerald-500' : isManual ? 'bg-sky-500' : 'bg-emerald-400'}`} />
+                {out.symbol} {out.unit ? `(${out.unit})` : ''}
+              </div>
+            )
+          })}
         </div>
       )}
 
@@ -529,6 +546,168 @@ function clientEvaluateFormula(formula: string, context: Record<string, number> 
 }
 
 // ──────────────────────────────────────────────
+// Bidirectional Solver Functions
+// ──────────────────────────────────────────────
+
+/**
+ * Numerical solver using bisection method.
+ * Finds the value of unknownVar such that evaluateFn(unknownVar) ≈ targetOutput.
+ */
+function numericalSolve(
+  evaluateFn: (val: number) => number,
+  targetOutput: number,
+  initialGuess = 1,
+  tolerance = 0.0001,
+  maxIterations = 200
+): number | null {
+  // Try to bracket the root
+  let low = Math.min(0, initialGuess) - Math.abs(initialGuess || 1)
+  let high = Math.max(0, initialGuess) + Math.abs(initialGuess || 1)
+
+  // Expand bounds until we bracket the root
+  let fLow = evaluateFn(low) - targetOutput
+  let fHigh = evaluateFn(high) - targetOutput
+
+  for (let attempt = 0; attempt < 30; attempt++) {
+    if (fLow * fHigh <= 0) break // Root bracketed
+    low -= Math.abs(low) * 2 + 1
+    high += Math.abs(high) * 2 + 1
+    fLow = evaluateFn(low) - targetOutput
+    fHigh = evaluateFn(high) - targetOutput
+  }
+
+  if (fLow * fHigh > 0) {
+    // Try with a much wider range
+    low = -1e6
+    high = 1e6
+    fLow = evaluateFn(low) - targetOutput
+    fHigh = evaluateFn(high) - targetOutput
+    if (fLow * fHigh > 0) return null
+  }
+
+  // Bisection
+  for (let i = 0; i < maxIterations; i++) {
+    const mid = (low + high) / 2
+    const fMid = evaluateFn(mid) - targetOutput
+
+    if (Math.abs(fMid) < tolerance) return mid
+    if (fLow * fMid < 0) {
+      high = mid
+      fHigh = fMid
+    } else {
+      low = mid
+      fLow = fMid
+    }
+  }
+
+  return (low + high) / 2
+}
+
+/**
+ * Solve a calculation node for a single unknown variable.
+ * Returns the computed value of the unknown variable, or null if unsolvable.
+ */
+function solveForUnknown(
+  equationOutputs: EquationOutput[],
+  allValues: Record<string, number>,
+  unknownSymbol: string,
+  inputDefs: EquationInput[]
+): number | null {
+  // Find which output formula contains the unknown
+  for (const out of equationOutputs) {
+    if (!out.formula) continue
+
+    // Check if the unknown is an input variable
+    const isInput = inputDefs.some(i => i.symbol === unknownSymbol)
+
+    if (isInput) {
+      // Reverse solve: we know the output and all inputs except one
+      // Find the initial guess from defaults
+      const inputDef = inputDefs.find(i => i.symbol === unknownSymbol)
+      const defaultVal = inputDef?.default_value ? parseFloat(String(inputDef.default_value)) : 1
+
+      // Try each output formula
+      for (const o of equationOutputs) {
+        if (!o.formula) continue
+        // Check if this formula's output value is known
+        const outVal = allValues[o.symbol]
+        if (outVal === undefined || outVal === null) continue
+
+        // Check if unknown appears in this formula
+        const formulaStr = o.formula
+        if (!formulaStr.includes(unknownSymbol) && unknownSymbol.length > 0) {
+          // Try anyway - the unknown might be indirectly used
+        }
+
+        const evaluateFn = (val: number) => {
+          const ctx = { ...allValues, [unknownSymbol]: val }
+          return clientEvaluateFormula(formulaStr, ctx)
+        }
+
+        const result = numericalSolve(evaluateFn, outVal, defaultVal)
+        if (result !== null && isFinite(result)) return result
+      }
+    } else {
+      // Forward solve: unknown is an output, all inputs known
+      const evalResult = clientEvaluateFormula(out.formula, allValues)
+      if (evalResult !== 0 || Object.keys(allValues).length > 0) {
+        // Check it's not just a failed eval
+        const testResult = clientEvaluateFormula(out.formula, allValues)
+        if (isFinite(testResult)) return testResult
+      }
+    }
+  }
+
+  return null
+}
+
+/**
+ * Perform bidirectional solve on a calculation node.
+ * Given current inputValues and outputValues, determine which variable
+ * is the single unknown and solve for it.
+ */
+function bidirectionalSolve(
+  equationInputs: EquationInput[],
+  equationOutputs: EquationOutput[],
+  inputValues: Record<string, string>,
+  outputValues: Record<string, string>
+): { solvedSymbol: string; solvedValue: number; source: 'auto' } | null {
+  // Collect all known numeric values
+  const knownValues: Record<string, number> = {}
+  const allSymbols = [
+    ...equationInputs.map(i => i.symbol),
+    ...equationOutputs.map(o => o.symbol),
+  ]
+
+  let unknownSymbol: string | null = null
+  let unknownCount = 0
+
+  for (const symbol of allSymbols) {
+    const inputVal = inputValues[symbol]
+    const outputVal = outputValues[symbol]
+
+    if (inputVal !== undefined && inputVal !== '' && !isNaN(parseFloat(inputVal))) {
+      knownValues[symbol] = parseFloat(inputVal)
+    } else if (outputVal !== undefined && outputVal !== '' && !isNaN(parseFloat(outputVal))) {
+      knownValues[symbol] = parseFloat(outputVal)
+    } else {
+      unknownSymbol = symbol
+      unknownCount++
+    }
+  }
+
+  if (unknownCount !== 1 || !unknownSymbol) return null
+
+  // Solve for the unknown
+  const result = solveForUnknown(equationOutputs, knownValues, unknownSymbol, equationInputs)
+  if (result !== null && isFinite(result)) {
+    return { solvedSymbol: unknownSymbol, solvedValue: result, source: 'auto' }
+  }
+
+  return null
+}
+
+// ──────────────────────────────────────────────
 // Pre-built Workflow Examples
 // ──────────────────────────────────────────────
 
@@ -643,6 +822,405 @@ const EXAMPLES = [
 ]
 
 // ──────────────────────────────────────────────
+// Calculation Node Editor with Bidirectional Solving
+// ──────────────────────────────────────────────
+
+function CalculationNodeEditor({
+  d,
+  nodeId,
+  equations,
+  onUpdate,
+}: {
+  d: WorkflowNodeData
+  nodeId: string
+  equations: Record<string, EquationData[]>
+  onUpdate: (id: string, data: Partial<WorkflowNodeData>) => void
+}) {
+  const [solveMessage, setSolveMessage] = React.useState<string | null>(null)
+  const debounceRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const eqInputs = d.equationInputs || []
+  const eqOutputs = d.equationOutputs || []
+  const inputValues = d.inputValues || {}
+  const outputValues = d.outputValues || {}
+  const valueSource = d.valueSource || {}
+
+  // Auto-solve with debounce when values change
+  const triggerSolve = React.useCallback((newInputValues: Record<string, string>, newOutputValues: Record<string, string>) => {
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => {
+      if (eqInputs.length === 0 || eqOutputs.length === 0) return
+
+      const result = bidirectionalSolve(eqInputs, eqOutputs, newInputValues, newOutputValues)
+      if (result) {
+        const { solvedSymbol, solvedValue } = result
+        const isInput = eqInputs.some(i => i.symbol === solvedSymbol)
+        const formatted = parseFloat(solvedValue.toFixed(6)).toString()
+
+        const updatedInputValues = { ...newInputValues }
+        const updatedOutputValues = { ...newOutputValues }
+        const updatedValueSource = { ...valueSource }
+
+        if (isInput) {
+          updatedInputValues[solvedSymbol] = formatted
+        } else {
+          updatedOutputValues[solvedSymbol] = formatted
+        }
+        updatedValueSource[solvedSymbol] = 'auto'
+
+        onUpdate(nodeId, {
+          inputValues: updatedInputValues,
+          outputValues: updatedOutputValues,
+          valueSource: updatedValueSource,
+          computedResult: Object.fromEntries(
+            eqOutputs.map(o => {
+              const val = updatedOutputValues[o.symbol]
+                ? parseFloat(updatedOutputValues[o.symbol])
+                : updatedInputValues[o.symbol]
+                  ? undefined
+                  : undefined
+              return [o.symbol, val ?? 0]
+            }).filter(([, v]) => v !== undefined)
+          ),
+        })
+        setSolveMessage(`Auto-solved ${solvedSymbol} = ${formatted}`)
+      } else {
+        setSolveMessage(null)
+      }
+    }, 300)
+  }, [eqInputs, eqOutputs, nodeId, onUpdate, valueSource])
+
+  // Handle input value change
+  const handleInputChange = React.useCallback((symbol: string, value: string) => {
+    const newInputValues = { ...inputValues, [symbol]: value }
+    const newValueSource = { ...valueSource, [symbol]: value !== '' ? 'manual' as const : undefined }
+
+    // Clear auto-computed output for this input if manually changed
+    // Also try forward solve if all inputs are filled
+    const allInputsFilled = eqInputs.every(inp =>
+      newInputValues[inp.symbol] !== undefined && newInputValues[inp.symbol] !== '' && !isNaN(parseFloat(newInputValues[inp.symbol]))
+    )
+
+    if (allInputsFilled && eqOutputs.length > 0) {
+      // Forward solve: compute all outputs
+      const inputNums: Record<string, number> = {}
+      for (const inp of eqInputs) {
+        const v = parseFloat(newInputValues[inp.symbol])
+        if (!isNaN(v)) inputNums[inp.symbol] = v
+      }
+      const newComputed: Record<string, number> = {}
+      const newOutputVals = { ...outputValues }
+      const newSources = { ...newValueSource }
+      for (const out of eqOutputs) {
+        if (out.formula) {
+          const result = clientEvaluateFormula(out.formula, inputNums)
+          if (isFinite(result)) {
+            newComputed[out.symbol] = result
+            newOutputVals[out.symbol] = parseFloat(result.toFixed(6)).toString()
+            newSources[out.symbol] = 'auto'
+          }
+        }
+      }
+      onUpdate(nodeId, {
+        inputValues: newInputValues,
+        outputValues: newOutputVals,
+        valueSource: newSources,
+        computedResult: newComputed,
+      })
+      setSolveMessage(`Calculated ${Object.keys(newComputed).join(', ')}`)
+    } else {
+      // Try bidirectional solve
+      onUpdate(nodeId, {
+        inputValues: newInputValues,
+        valueSource: newSources,
+      })
+      triggerSolve(newInputValues, outputValues)
+    }
+  }, [inputValues, outputValues, valueSource, eqInputs, eqOutputs, nodeId, onUpdate, triggerSolve])
+
+  // Handle output value change
+  const handleOutputChange = React.useCallback((symbol: string, value: string) => {
+    const newOutputValues = { ...outputValues, [symbol]: value }
+    const newValueSource = { ...valueSource, [symbol]: value !== '' ? 'manual' as const : undefined }
+
+    onUpdate(nodeId, {
+      outputValues: newOutputValues,
+      valueSource: newValueSource,
+    })
+
+    // Try bidirectional solve (reverse)
+    triggerSolve(inputValues, newOutputValues)
+  }, [outputValues, valueSource, inputValues, nodeId, onUpdate, triggerSolve])
+
+  // Solve button: explicitly solve
+  const handleSolve = React.useCallback(() => {
+    if (eqInputs.length === 0 || eqOutputs.length === 0) return
+
+    // First try forward solve
+    const inputNums: Record<string, number> = {}
+    let allFilled = true
+    for (const inp of eqInputs) {
+      const v = parseFloat(inputValues[inp.symbol] || '')
+      if (isNaN(v)) { allFilled = false; break }
+      inputNums[inp.symbol] = v
+    }
+
+    if (allFilled) {
+      const newComputed: Record<string, number> = {}
+      const newOutputVals = { ...outputValues }
+      const newSources = { ...valueSource }
+      for (const out of eqOutputs) {
+        if (out.formula) {
+          const result = clientEvaluateFormula(out.formula, inputNums)
+          if (isFinite(result)) {
+            newComputed[out.symbol] = result
+            newOutputVals[out.symbol] = parseFloat(result.toFixed(6)).toString()
+            newSources[out.symbol] = 'auto'
+          }
+        }
+      }
+      onUpdate(nodeId, {
+        outputValues: newOutputVals,
+        valueSource: newSources,
+        computedResult: newComputed,
+      })
+      setSolveMessage(`Calculated ${Object.keys(newComputed).join(', ')}`)
+      return
+    }
+
+    // Try bidirectional solve
+    const result = bidirectionalSolve(eqInputs, eqOutputs, inputValues, outputValues)
+    if (result) {
+      const { solvedSymbol, solvedValue } = result
+      const isInput = eqInputs.some(i => i.symbol === solvedSymbol)
+      const formatted = parseFloat(solvedValue.toFixed(6)).toString()
+
+      const updatedInputValues = { ...inputValues }
+      const updatedOutputValues = { ...outputValues }
+      const updatedValueSource = { ...valueSource }
+
+      if (isInput) {
+        updatedInputValues[solvedSymbol] = formatted
+      } else {
+        updatedOutputValues[solvedSymbol] = formatted
+      }
+      updatedValueSource[solvedSymbol] = 'auto'
+
+      const newComputed: Record<string, number> = {}
+      for (const out of eqOutputs) {
+        if (out.formula) {
+          const ctx: Record<string, number> = {}
+          for (const inp of eqInputs) {
+            const v = parseFloat(updatedInputValues[inp.symbol] || '')
+            if (!isNaN(v)) ctx[inp.symbol] = v
+          }
+          const r = clientEvaluateFormula(out.formula, ctx)
+          if (isFinite(r)) newComputed[out.symbol] = r
+        }
+      }
+
+      onUpdate(nodeId, {
+        inputValues: updatedInputValues,
+        outputValues: updatedOutputValues,
+        valueSource: updatedValueSource,
+        computedResult: newComputed,
+      })
+      setSolveMessage(`Solved ${solvedSymbol} = ${formatted}`)
+    } else {
+      // Count missing values
+      const missing = [
+        ...eqInputs.filter(i => !inputValues[i.symbol] || inputValues[i.symbol] === ''),
+        ...eqOutputs.filter(o => !outputValues[o.symbol] || outputValues[o.symbol] === ''),
+      ]
+      setSolveMessage(`Need more values. Missing: ${missing.map(m => m.symbol).join(', ')}`)
+    }
+  }, [eqInputs, eqOutputs, inputValues, outputValues, valueSource, nodeId, onUpdate])
+
+  // Reset node values
+  const handleReset = React.useCallback(() => {
+    const defaultInputs: Record<string, string> = {}
+    for (const inp of eqInputs) {
+      if (inp.default_value !== undefined) defaultInputs[inp.symbol] = String(inp.default_value)
+    }
+    onUpdate(nodeId, {
+      inputValues: defaultInputs,
+      outputValues: {},
+      valueSource: {},
+      computedResult: undefined,
+      executionStatus: 'idle',
+    })
+    setSolveMessage(null)
+  }, [eqInputs, nodeId, onUpdate])
+
+  return (
+    <>
+      {/* Equation selector */}
+      <div>
+        <Label className="text-xs">Equation</Label>
+        <Select
+          value={String(d.equationId || '')}
+          onValueChange={val => {
+            let selectedEq: EquationData | undefined
+            for (const domain of Object.keys(equations)) {
+              selectedEq = equations[domain].find(eq => String(eq.id) === val)
+              if (selectedEq) break
+            }
+            if (selectedEq) {
+              const defaultInputs: Record<string, string> = {}
+              for (const inp of selectedEq.inputs || []) {
+                if (inp.default_value !== undefined) defaultInputs[inp.symbol] = String(inp.default_value)
+              }
+              onUpdate(nodeId, {
+                equationId: selectedEq.id,
+                equationName: selectedEq.name,
+                equationFormula: selectedEq.formula || selectedEq.equation,
+                equationInputs: selectedEq.inputs || [],
+                equationOutputs: selectedEq.outputs || [],
+                inputValues: defaultInputs,
+                outputValues: {},
+                valueSource: {},
+                computedResult: undefined,
+                executionStatus: 'idle',
+              })
+              setSolveMessage(null)
+            }
+          }}
+        >
+          <SelectTrigger className="h-8 text-xs">
+            <SelectValue placeholder="Select equation..." />
+          </SelectTrigger>
+          <SelectContent className="max-h-[300px]">
+            {Object.entries(equations).map(([domain, eqs]) => (
+              <React.Fragment key={domain}>
+                <div className="px-2 py-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                  <span>{DOMAIN_STYLES[domain]?.icon}</span> {domain}
+                </div>
+                {eqs.map(eq => (
+                  <SelectItem key={String(eq.id)} value={String(eq.id)} className="text-xs">
+                    {eq.name}
+                  </SelectItem>
+                ))}
+              </React.Fragment>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      {/* Formula display */}
+      {d.equationFormula && (
+        <div className="px-2 py-1.5 rounded bg-muted text-[10px] font-mono break-all">
+          {d.equationFormula}
+        </div>
+      )}
+
+      {/* Input Variables */}
+      {eqInputs.length > 0 && (
+        <div>
+          <Label className="text-xs mb-1.5 block font-semibold text-amber-600 dark:text-amber-400">
+            Input Variables
+          </Label>
+          <div className="space-y-1.5">
+            {eqInputs.map(inp => {
+              const source = valueSource[inp.symbol]
+              const isAuto = source === 'auto'
+              const isManual = source === 'manual'
+              const currentValue = inputValues[inp.symbol] ?? ''
+
+              return (
+                <div key={inp.symbol} className={`flex items-center gap-1.5 p-1 rounded ${isAuto ? 'bg-emerald-50 dark:bg-emerald-950/20 ring-1 ring-emerald-300 dark:ring-emerald-700' : isManual ? 'bg-sky-50 dark:bg-sky-950/20 ring-1 ring-sky-300 dark:ring-sky-700' : ''}`}>
+                  <Badge variant="outline" className="text-[9px] h-5 min-w-[40px] justify-center font-mono shrink-0">
+                    {inp.symbol}
+                  </Badge>
+                  <Input
+                    value={currentValue}
+                    onChange={e => handleInputChange(inp.symbol, e.target.value)}
+                    placeholder={inp.default_value !== undefined ? String(inp.default_value) : '?'}
+                    className={`h-7 text-xs flex-1 ${isAuto ? 'border-emerald-300 dark:border-emerald-700' : isManual ? 'border-sky-300 dark:border-sky-700' : ''}`}
+                  />
+                  <span className="text-[8px] text-muted-foreground min-w-[28px] shrink-0">{inp.unit || ''}</span>
+                  {isAuto && (
+                    <Badge className="text-[7px] h-4 px-1 bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300 border-0 shrink-0">auto</Badge>
+                  )}
+                  {isManual && (
+                    <Badge className="text-[7px] h-4 px-1 bg-sky-100 text-sky-700 dark:bg-sky-900 dark:text-sky-300 border-0 shrink-0">manual</Badge>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Output Variables */}
+      {eqOutputs.length > 0 && (
+        <div>
+          <Label className="text-xs mb-1.5 block font-semibold text-emerald-600 dark:text-emerald-400">
+            Output Variables
+          </Label>
+          <div className="space-y-1.5">
+            {eqOutputs.map(out => {
+              const source = valueSource[out.symbol]
+              const isAuto = source === 'auto'
+              const isManual = source === 'manual'
+              const currentValue = outputValues[out.symbol] ?? ''
+
+              return (
+                <div key={out.symbol} className={`flex items-center gap-1.5 p-1 rounded ${isAuto ? 'bg-emerald-50 dark:bg-emerald-950/20 ring-1 ring-emerald-300 dark:ring-emerald-700' : isManual ? 'bg-sky-50 dark:bg-sky-950/20 ring-1 ring-sky-300 dark:ring-sky-700' : ''}`}>
+                  <Badge variant="outline" className="text-[9px] h-5 min-w-[40px] justify-center font-mono shrink-0">
+                    {out.symbol}
+                  </Badge>
+                  <Input
+                    value={currentValue}
+                    onChange={e => handleOutputChange(out.symbol, e.target.value)}
+                    placeholder="?"
+                    className={`h-7 text-xs flex-1 ${isAuto ? 'border-emerald-300 dark:border-emerald-700' : isManual ? 'border-sky-300 dark:border-sky-700' : ''}`}
+                  />
+                  <span className="text-[8px] text-muted-foreground min-w-[28px] shrink-0">{out.unit || ''}</span>
+                  {isAuto && (
+                    <Badge className="text-[7px] h-4 px-1 bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300 border-0 shrink-0">calculated</Badge>
+                  )}
+                  {isManual && (
+                    <Badge className="text-[7px] h-4 px-1 bg-sky-100 text-sky-700 dark:bg-sky-900 dark:text-sky-300 border-0 shrink-0">manual</Badge>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Solve message */}
+      {solveMessage && (
+        <div className={`text-[10px] px-2 py-1.5 rounded ${solveMessage.includes('Need') ? 'bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-300' : 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-300'}`}>
+          {solveMessage}
+        </div>
+      )}
+
+      {/* Action buttons */}
+      <div className="flex gap-2">
+        <Button
+          size="sm"
+          className="flex-1 h-7 text-xs gap-1 bg-emerald-600 hover:bg-emerald-700"
+          onClick={handleSolve}
+        >
+          <Calculator className="h-3 w-3" />
+          Solve
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7 text-xs gap-1"
+          onClick={handleReset}
+        >
+          <RotateCcw className="h-3 w-3" />
+          Reset
+        </Button>
+      </div>
+    </>
+  )
+}
+
+// ──────────────────────────────────────────────
 // Node Editor Panel
 // ──────────────────────────────────────────────
 
@@ -720,78 +1298,7 @@ function NodeEditorPanel({
 
         {/* CALCULATION node fields */}
         {d.nodeType === 'calculation' && (
-          <>
-            <div>
-              <Label className="text-xs">Equation</Label>
-              <Select
-                value={String(d.equationId || '')}
-                onValueChange={val => {
-                  // Find the selected equation
-                  let selectedEq: EquationData | undefined
-                  for (const domain of Object.keys(equations)) {
-                    selectedEq = equations[domain].find(eq => String(eq.id) === val)
-                    if (selectedEq) break
-                  }
-                  if (selectedEq) {
-                    onUpdate(node.id, {
-                      equationId: selectedEq.id,
-                      equationName: selectedEq.name,
-                      equationFormula: selectedEq.formula || selectedEq.equation,
-                      equationInputs: selectedEq.inputs || [],
-                      equationOutputs: selectedEq.outputs || [],
-                      inputValues: {},
-                      computedResult: undefined,
-                      executionStatus: 'idle',
-                    })
-                  }
-                }}
-              >
-                <SelectTrigger className="h-8 text-xs">
-                  <SelectValue placeholder="Select equation..." />
-                </SelectTrigger>
-                <SelectContent className="max-h-[300px]">
-                  {Object.entries(equations).map(([domain, eqs]) => (
-                    <React.Fragment key={domain}>
-                      <div className="px-2 py-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-                        <span>{DOMAIN_STYLES[domain]?.icon}</span> {domain}
-                      </div>
-                      {eqs.map(eq => (
-                        <SelectItem key={String(eq.id)} value={String(eq.id)} className="text-xs">
-                          {eq.name}
-                        </SelectItem>
-                      ))}
-                    </React.Fragment>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            {d.equationFormula && (
-              <div className="px-2 py-1.5 rounded bg-muted text-[10px] font-mono break-all">
-                {d.equationFormula}
-              </div>
-            )}
-            {d.equationInputs && d.equationInputs.length > 0 && (
-              <div>
-                <Label className="text-xs mb-1 block">Input Values</Label>
-                {d.equationInputs.map(inp => (
-                  <div key={inp.symbol} className="flex items-center gap-1.5 mb-1">
-                    <Badge variant="outline" className="text-[9px] h-5 min-w-[50px] justify-center font-mono">
-                      {inp.symbol}
-                    </Badge>
-                    <Input
-                      value={d.inputValues?.[inp.symbol] ?? String(inp.default_value ?? '')}
-                      onChange={e => onUpdate(node.id, {
-                        inputValues: { ...d.inputValues, [inp.symbol]: e.target.value }
-                      })}
-                      placeholder={String(inp.default_value ?? '')}
-                      className="h-7 text-xs flex-1"
-                    />
-                    <span className="text-[9px] text-muted-foreground min-w-[30px]">{inp.unit || ''}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </>
+          <CalculationNodeEditor d={d} nodeId={node.id} equations={equations} onUpdate={onUpdate} />
         )}
 
         {/* PROCESS node fields */}
@@ -1126,6 +1633,10 @@ function WorkflowBuilderInner() {
 
   // Add calculation node from equation
   const addCalcNodeFromEquation = React.useCallback((eq: EquationData) => {
+    const defaultInputs: Record<string, string> = {}
+    for (const inp of eq.inputs || []) {
+      if (inp.default_value !== undefined) defaultInputs[inp.symbol] = String(inp.default_value)
+    }
     addNode('calculation', {
       label: eq.name,
       equationId: eq.id,
@@ -1133,7 +1644,9 @@ function WorkflowBuilderInner() {
       equationFormula: eq.formula || eq.equation,
       equationInputs: eq.inputs || [],
       equationOutputs: eq.outputs || [],
-      inputValues: {},
+      inputValues: defaultInputs,
+      outputValues: {},
+      valueSource: {},
     })
   }, [addNode])
 
@@ -1233,14 +1746,24 @@ function WorkflowBuilderInner() {
       for (const edge of incomingEdges) {
         const sourceResults = nodeResults[edge.source]
         if (sourceResults) {
-          // If target handle specifies a symbol, map it
-          if (edge.targetHandle?.startsWith('in-')) {
+          // If source handle specifies an output symbol, use it
+          if (edge.sourceHandle?.startsWith('out-')) {
+            const sourceSymbol = edge.sourceHandle.replace('out-', '')
+            const sourceVal = sourceResults[sourceSymbol]
+            if (sourceVal !== undefined) {
+              // Map to the target handle's symbol, or the source symbol if generic
+              if (edge.targetHandle?.startsWith('in-')) {
+                const targetSymbol = edge.targetHandle.replace('in-', '')
+                incomingValues[targetSymbol] = sourceVal
+              } else {
+                incomingValues[sourceSymbol] = sourceVal
+              }
+            }
+          } else if (edge.targetHandle?.startsWith('in-')) {
             const symbol = edge.targetHandle.replace('in-', '')
-            // Take the first available output value from source
             const sourceVals = Object.values(sourceResults)
             if (sourceVals.length > 0) {
-              incomingValues[symbol] = sourceVals[0] // Default: first output maps to this input
-              // Try to match by symbol
+              incomingValues[symbol] = sourceVals[0]
               for (const [k, v] of Object.entries(sourceResults)) {
                 if (k === symbol) {
                   incomingValues[symbol] = v
@@ -1249,7 +1772,6 @@ function WorkflowBuilderInner() {
               }
             }
           } else {
-            // Generic: map all source outputs to incoming values
             Object.assign(incomingValues, sourceResults)
           }
         }
@@ -1379,6 +1901,31 @@ function WorkflowBuilderInner() {
 
       // Update node with results (except decision which is handled above)
       if (d.nodeType !== 'decision') {
+        // For calculation nodes, also update outputValues and valueSource
+        const extraUpdate: Partial<WorkflowNodeData> = {}
+        if (d.nodeType === 'calculation') {
+          const newOutputVals: Record<string, string> = { ...(d.outputValues || {}) }
+          const newInputVals: Record<string, string> = { ...(d.inputValues || {}) }
+          const newSources: Record<string, 'manual' | 'auto' | 'propagated'> = { ...(d.valueSource || {}) }
+
+          for (const [k, v] of Object.entries(results)) {
+            newOutputVals[k] = parseFloat(v.toFixed(6)).toString()
+            newSources[k] = 'auto'
+          }
+
+          // Mark propagated inputs
+          for (const inp of (d.equationInputs || [])) {
+            if (incomingValues[inp.symbol] !== undefined) {
+              newInputVals[inp.symbol] = parseFloat(incomingValues[inp.symbol].toFixed(6)).toString()
+              newSources[inp.symbol] = 'propagated'
+            }
+          }
+
+          extraUpdate.outputValues = newOutputVals
+          extraUpdate.inputValues = newInputVals
+          extraUpdate.valueSource = newSources
+        }
+
         setNodes(nds => nds.map(n => {
           if (n.id !== nodeId) return n
           return {
@@ -1387,6 +1934,7 @@ function WorkflowBuilderInner() {
               ...(n.data as unknown as WorkflowNodeData),
               computedResult: results,
               executionStatus: 'success' as const,
+              ...extraUpdate,
             } as any,
           }
         }))
@@ -1553,7 +2101,7 @@ function WorkflowBuilderInner() {
             className="gap-1.5 bg-emerald-600 hover:bg-emerald-700"
           >
             <Play className="h-3.5 w-3.5" />
-            {isExecuting ? 'Executing...' : 'Execute'}
+            {isExecuting ? 'Running...' : 'Run All'}
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
