@@ -10,7 +10,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 import { Progress } from '@/components/ui/progress'
-import { Search, Play, GitBranch, ChevronRight, ChevronLeft, CheckCircle2, XCircle, FileText, AlertTriangle } from 'lucide-react'
+import { Search, Play, GitBranch, ChevronRight, ChevronLeft, CheckCircle2, XCircle, FileText, AlertTriangle, ArrowRightLeft } from 'lucide-react'
 import { ENGINEERING_PIPELINES, type EngineeringPipeline, type PipelineStep } from '@/lib/engineering-pipelines'
 
 interface PipelineItem {
@@ -322,8 +322,42 @@ export function PipelinesSection() {
                               ))}
                             </div>
 
-                            <div className="flex gap-2">
-                              <Button onClick={handleCalculateStep} className="flex-1">
+                            {/* Output fields - editable for reverse calculation */}
+                            {step.outputs && step.outputs.length > 0 && (
+                              <div className="mt-4">
+                                <h4 className="text-xs font-semibold mb-2 flex items-center gap-1 text-emerald-600">
+                                  <ArrowRightLeft className="h-3.5 w-3.5" />
+                                  Outputs (editable for reverse calculation)
+                                </h4>
+                                <div className="grid gap-3 md:grid-cols-2">
+                                  {step.outputs.map(out => (
+                                    <div key={out.name} className="space-y-1">
+                                      <label className="text-xs font-medium flex items-center gap-1">
+                                        {out.label || out.name}
+                                        {out.unit && <span className="text-muted-foreground">({out.unit})</span>}
+                                        {accumulated[out.name] !== undefined && stepResults.some(r => r.step_number === step.stepNumber && r.success) && (
+                                          <Badge className="text-[8px] h-3 bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400 border-0 px-1">calculated</Badge>
+                                        )}
+                                      </label>
+                                      <Input
+                                        type="number"
+                                        value={stepInputs[currentStep]?.[`__output_${out.name}`] ?? accumulated[out.name] ?? ''}
+                                        onChange={e => setStepInputs(prev => ({
+                                          ...prev,
+                                          [currentStep]: { ...prev[currentStep], [`__output_${out.name}`]: parseFloat(e.target.value) || 0 }
+                                        }))}
+                                        placeholder="Auto-calculated"
+                                        className="border-amber-300 bg-amber-50/30 dark:border-amber-700 dark:bg-amber-950/20"
+                                        step="any"
+                                      />
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+
+                            <div className="flex gap-2 pt-2">
+                              <Button onClick={handleCalculateStep} className="flex-1 bg-emerald-600 hover:bg-emerald-700">
                                 <Play className="h-4 w-4 mr-2" />
                                 Calculate Step {step.stepNumber}
                               </Button>

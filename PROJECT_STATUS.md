@@ -1,9 +1,9 @@
 # EngiSuite Analytics — Project Status File
 
-> **Purpose**: This file serves as persistent memory for the project. All agents must read this before starting work and update it after completing tasks. This prevents re-reading and repeating work.
+> **Purpose**: This file serves as persistent memory for the project. All agents must read this before starting work and update it after completing tasks.
 
-**Last Updated**: 2025-04-18
-**Current Phase**: Rebuild from Original Repo with sql.js
+**Last Updated**: 2025-04-18 (Session 3)
+**Current Phase**: Core Features Implemented — Smart Calculator + Data Analysis + PDF Editor + Workflow Builder
 
 ---
 
@@ -18,146 +18,136 @@
 ### Key Decision: sql.js instead of better-sqlite3
 - better-sqlite3 requires native compilation (node-gyp) → fails on Hostinger shared hosting
 - sql.js is WebAssembly-based → no native compilation → works everywhere
-- Original repo already uses sql.js for courses.db and workflows.db
+- All API routes now use `ensureDatabase()` from `@/lib/database` (sql.js)
 
 ---
 
 ## 2. Uploaded Database Contents (SOURCE OF TRUTH)
 
-### engmastery.db (courses database)
-- **disciplines**: 5 rows (electrical, mechanical, civil, chemical, hvac)
-- **chapters**: 20 rows (grouped by discipline)
-- **lessons**: 22 rows (with articles, simulations, practice problems)
-- **articles**: 3 rows (full HTML content)
-- **simulations**: 0 rows
-- **practice_problems**: 0 rows
-
-### courses.db (learning courses database)
-- **courses**: 6 rows (electrical, mechanical, civil, chemical, hvac, thermodynamics)
+### engmastery.db (courses database — naming is confusing but this has the main course content)
+- **courses**: 6 rows (electrical, mechanical, civil, chemical, industrial, mechatronics)
 - **modules**: 65 rows
 - **chapters**: 247 rows
-- **lessons**: 1211 rows (with full markdown content and type: reading/interactive)
-- **quizzes**: 1211 rows (JSON questions with options and explanations)
+- **lessons**: 1,211 rows (with full markdown content)
+- **quizzes**: 1,211 rows (JSON questions with options and explanations)
+
+### courses.db (engmastery/learning content — naming is confusing)
+- **disciplines**: 5 rows (electrical, mechanical, civil, chemical, industrial)
+- **chapters**: 20 rows
+- **lessons**: 22 rows
+- **articles**: 3 rows (full HTML content)
 
 ### workflows.db (main engineering database)
 - **equation_categories**: 20 rows (electrical, mechanical, civil, chemical, hvac, etc.)
 - **equations**: 450 rows (with formula, latex, tags, domain)
-- **equation_inputs**: 14 rows
-- **equation_outputs**: 4 rows
+- **equation_inputs**: 14 rows (only 4 equations have explicit inputs)
+- **equation_outputs**: 4 rows (only 4 equations have explicit outputs)
 - **engineering_standards**: 32 rows (IEC, NEC, EN standards)
 - **standard_coefficients**: 40 rows (derating tables, temperature corrections)
-- **calculation_pipelines**: 56 rows (cable sizing, PF correction, beam design, HVAC, etc.)
+- **calculation_pipelines**: 56 rows
 - **calculation_steps**: 189 rows (with formulas, input/output config as JSON)
 - **calculation_dependencies**: 256 rows
 - **report_templates**: 6 rows
 - **workflow_categories**: 3 rows
-- **calculation_executions**: 2 rows
 
-### users.db (user/auth database)
-- **users**: 0 rows (empty)
-- Many tables for auth, subscriptions, projects, etc. (all empty)
+### users.db (empty - schema only)
+- 41 tables, all 0 rows
 
 ---
 
-## 3. Original Repo Features (Must All Be Rebuilt)
+## 3. Implementation Status (Current Session)
 
-### 3.1 Backend Features (from original Express server)
-| Feature | Original Route | Description |
-|---------|---------------|-------------|
-| Equations/Calculators | `/api/equations` | 450 equations with inputs/outputs, solve with mathjs |
-| Pipelines | `/api/pipelines` | 56 calculation pipelines with 189 steps |
-| Local Pipelines | `/api/local-pipelines` | Hardcoded engineering pipelines with calculate() functions |
-| Calculation Engine | CalculationEngine class | DAG-based execution, formula evaluation, standards lookup |
-| Workflows | `/api/workflows` | Visual workflow builder with categorized nodes |
-| Learning/Courses | `/api/learning` | Courses, modules, chapters, lessons, quizzes |
-| Analytics | `/api/analytics` | Data analysis, datasets |
-| VDA (Visual Data Analysis) | `/api/vda` | File upload, query builder, report/dashboard builder |
-| PDF Editor | Canvas-based | PDF editing functionality |
-| Logic Simulator | Canvas-based | Digital logic gate simulator |
-| Electrical Simulator | Canvas-based | Circuit simulator with components |
-| Hydraulic Simulator | Canvas-based | Hydraulic system simulator |
-| Diagram Studio | Canvas-based | General diagram/canvas tool |
-| Report Generator | ReportGenerator service | HTML/PDF report generation |
-| Canvas States | `/api/canvas` | Save/load canvas states |
-| Projects | `/api/projects` | Project management |
-| ~~AI Assistant~~ | ~~`/api/ai`~~ | **REMOVE - user cannot use AI** |
+### ✅ COMPLETED
+| Feature | Status | Details |
+|---------|--------|---------|
+| **sql.js Database Service** | ✅ Done | `src/lib/database.ts` — loads 3 SQLite DBs via sql.js WASM |
+| **API Routes** | ✅ Done | All 13 API routes use sql.js (not Prisma) |
+| **Smart Calculator** | ✅ Done | Auto-parses formula variables, ALL inputs+outputs editable, auto-calc, reverse calculation |
+| **Reverse Calculation** | ✅ Done | Leave ONE field empty → auto-solved via bisection method |
+| **Data Analysis** | ✅ Done | 6 tabs: Upload, Explore, Query Builder, Charts, Report Builder, Dashboard Builder |
+| **PDF Editor** | ✅ Done | PDF.js rendering, 11 tools, stamps, undo/redo, page management, dynamic import (SSR-safe) |
+| **Workflow Builder** | ✅ Done | React Flow, 5 node types, categorized equations, 5 examples, execution engine |
+| **Logic Simulator** | ✅ Exists | Basic 8-gate simulator with wiring (needs improvement for 20+ gates) |
+| **Electrical Simulator** | ✅ Exists | Canvas-based circuit builder with components |
+| **Diagram Studio** | ✅ Exists | Canvas-based shape editor with templates |
+| **Pipelines** | ✅ Done | 4 local pipelines + DB pipelines, step-by-step with output fields editable |
+| **Learning/Courses** | ✅ Done | Course catalog with modules/chapters/lessons from engmastery.db |
+| **Unit Converter** | ✅ Done | 8 categories with live conversion |
+| **Dashboard** | ✅ Done | Stats, quick actions, domain distribution |
+| **AI Assistant** | ✅ Removed | No AI references in the codebase |
+| **Header Section Titles** | ✅ Fixed | All 12 sections have proper titles |
+| **Dark Mode** | ✅ Working | next-themes with system/light/dark toggle |
 
-### 3.2 Frontend Pages (from original React frontend)
-| Page | Route | Status |
-|------|-------|--------|
-| Dashboard | `/dashboard` | Basic version exists |
-| Calculators | `/calculators` | Basic version exists |
-| Scientific Calculator | `/engineering-calculator` | MISSING |
-| Pipelines | `/pipelines` | Basic version exists (missing local pipelines) |
-| Visual Workflow | `/visual-workflow` | Basic version exists (missing categorized functions) |
-| Cable Sizing | `/cable-sizing` | MISSING (use local pipeline) |
-| Reports | `/reports` | MISSING |
-| Learning | `/learning` | Basic version exists (missing full content) |
-| Unit Converter | `/unit-converter` | Exists |
-| Logic Simulator | `/logic-simulator` | MISSING (needs wiring fix) |
-| PDF Editor | `/pdf-editor` | MISSING |
-| Data Analysis | `/data-analysis` | MISSING |
-| Data Upload | `/data-upload` | MISSING |
-| Visual Query Builder | `/visual-query-builder` | MISSING |
-| Visual Report Builder | `/visual-report-builder` | MISSING |
-| Visual Dashboard Builder | `/visual-dashboard-builder` | MISSING |
-| Diagram Studio | `/diagram-studio` | MISSING |
-| Electrical Simulator | `/simulators/electrical` | MISSING |
-| Hydraulic Simulator | `/simulators/hydraulic` | MISSING |
-| Fluid Simulator | `/simulators/fluid` | MISSING |
-| ~~AI Assistant~~ | ~~`/ai-assistant`~~ | **REMOVE** |
-| Settings | `/settings` | Basic version exists |
-
-### 3.3 Engineering Calculation Functions (from CalculationEngine)
-Available in formulas: sqrt, sin, cos, tan, asin, acos, atan, log, ln, exp, pow, abs, round, ceil, floor, max, min, sum, avg, select_cable, select_standard_size, next_standard_size, apply_demand_factor, lookup_cu_table, voltage_drop, pf_correction_capacitor, three_phase_power, short_circuit_current, beam_deflection, bending_stress, shear_stress, reynolds_number, darcy_friction_factor, pressure_drop, heat_transfer_coefficient
-
-### 3.4 Local Engineering Pipelines (hardcoded with calculate() functions)
-1. **LV Cable Sizing** (4 steps): Load Analysis → Cable Selection → Voltage Drop → Short-Circuit Check
-2. **Power Factor Correction** (3 steps): Existing Power Analysis → Correction Sizing → Capacitor Bank Selection
-3. **Steel Beam Design** (3 steps): Load Analysis → Section Selection → Deflection Check
-4. **HVAC Cooling Load** (3+ steps): Sensible Heat → Latent Heat → Equipment Selection
-5. More pipelines in `/src/data/pipelines/` directory
+### 🟡 NEEDS IMPROVEMENT
+| Feature | Issue | Priority |
+|---------|-------|----------|
+| **Logic Simulator** | Only 8 gate types, needs 20+ like original | Medium |
+| **Electrical Simulator** | Simplified V=IR, no nodal analysis | Low |
+| **Learning Section** | Course catalog only, no lesson playback/quiz interaction | Medium |
+| **Equation Inputs/Outputs** | Only 4/450 equations have explicit DB definitions, rest auto-parsed from formula | Medium |
+| **PDF Editor** | pdfjs-dist worker loads from CDN (may need offline) | Low |
 
 ---
 
-## 4. Current Project Architecture
+## 4. Smart Calculator Architecture (KEY FEATURE)
 
-### Technology Stack
-- Next.js 16.1.3 with App Router (standalone output)
-- TypeScript 5
-- Tailwind CSS 4 + shadcn/ui
-- **CHANGING TO**: sql.js (from Prisma/better-sqlite3)
-- Zustand for state
-- @xyflow/react for workflow builder
-- mathjs for equation solving
-- framer-motion for animations
+### How it works:
+1. **Formula Parsing**: `parseFormulaVariables()` extracts ALL variable names from equations like `R_dc = (rho * L) / A`
+2. **Auto-detection**: Distinguishes inputs vs outputs based on `=` assignment
+3. **ALL fields editable**: Both inputs AND outputs are editable input fields
+4. **Auto-calculate**: When all inputs are filled → outputs auto-calculated
+5. **Reverse calculation**: If ONE field is empty → solved numerically via bisection method
+6. **Client-side**: All calculations happen client-side using `clientEval()` (safe subset of math)
+7. **Server-side**: `/api/equations/solve` also supports `solveFor` parameter for reverse calculation
 
-### SPA Architecture
-- Single page at `/` (`src/app/page.tsx`)
-- Zustand store (`active-section-store`) for navigation
-- All sections rendered based on `activeSection`
+### This logic applies across:
+- **Calculators Section**: Full smart calculator with formula parsing
+- **Pipelines Section**: Output fields are editable for reverse calculation
+- **Workflow Builder**: CALCULATION nodes auto-create ports from equation variables
 
-### Current File Structure
+---
+
+## 5. Current File Structure
 ```
 src/
 ├── app/
-│   ├── page.tsx          # SPA entry
-│   ├── layout.tsx        # Root layout
-│   └── api/              # API routes
-│       ├── route.ts      # Health check
-│       ├── equations/    # CRUD + solve
-│       ├── categories/   # List
-│       ├── pipelines/    # List + execute
-│       ├── courses/      # List
-│       ├── units/        # List
-│       ├── stats/        # Dashboard stats
-│       └── ai/           # TO REMOVE
+│   ├── page.tsx              # SPA entry with dynamic PDF import
+│   ├── layout.tsx            # Root layout with AppShell
+│   └── api/                  # API routes (all use sql.js)
+│       ├── equations/        # List + solve (with reverse calc)
+│       ├── categories/       # Equation categories
+│       ├── pipelines/        # List + detail + execute
+│       ├── courses/          # List + detail
+│       ├── lessons/          # Lesson detail + quiz
+│       ├── units/            # Unit conversions
+│       ├── standards/        # Engineering standards
+│       ├── report-templates/ # Report templates
+│       └── stats/            # Dashboard statistics
 ├── components/
-│   ├── layout/           # AppShell, Sidebar, Header, Footer
-│   ├── sections/         # Dashboard, Calculators, Pipelines, Workflow, etc.
-│   └── ui/               # shadcn/ui components (40+)
+│   ├── app-shell.tsx         # Main layout shell
+│   ├── sidebar-nav.tsx       # Sidebar navigation
+│   ├── header.tsx            # Header with section titles
+│   ├── footer.tsx            # Sticky footer
+│   ├── sections/             # All section components
+│   │   ├── calculators-section.tsx      # Smart Calculator (auto-calc + reverse)
+│   │   ├── pipelines-section.tsx        # Pipelines with editable outputs
+│   │   ├── workflow-builder-section.tsx # React Flow workflow builder
+│   │   ├── data-analysis-section.tsx    # 6-tab data analysis suite
+│   │   ├── pdf-editor-section.tsx       # PDF.js editor (dynamic import)
+│   │   ├── logic-simulator-section.tsx  # Logic gate simulator
+│   │   ├── electrical-simulator-section.tsx
+│   │   ├── diagram-studio-section.tsx
+│   │   ├── learning-section.tsx
+│   │   ├── unit-converter-section.tsx
+│   │   ├── dashboard-section.tsx
+│   │   └── settings-section.tsx
+│   └── ui/                   # 40+ shadcn/ui components
 ├── lib/
-│   └── prisma.ts         # TO REPLACE with sql.js database service
+│   ├── database.ts           # sql.js database service (3 DBs)
+│   ├── calculation-engine.ts # Formula evaluator + DAG pipeline engine
+│   ├── engineering-pipelines.ts # 4 local pipelines with calculate()
+│   ├── report-generator.ts   # HTML/JSON report generation
+│   └── db.ts                 # OLD Prisma client (unused, keep for reference)
 ├── stores/
 │   └── active-section-store.ts
 └── hooks/
@@ -165,70 +155,19 @@ src/
 
 ---
 
-## 5. Implementation Plan
-
-### Phase 1: Database & Infrastructure (CURRENT)
-- [x] Analyze uploaded databases
-- [ ] Replace Prisma with sql.js database service
-- [ ] Import ALL data from uploaded databases
-- [ ] Remove AI Assistant section and API routes
-- [ ] Fix app not running issues
-
-### Phase 2: Core Features
-- [ ] Rebuild Calculation Engine (from original CalculationEngine class)
-- [ ] Rebuild equation solver with full engineering functions
-- [ ] Rebuild pipeline executor with DAG-based execution
-- [ ] Import 450 equations with full inputs/outputs
-- [ ] Import 56 calculation pipelines with 189 steps
-- [ ] Import local engineering pipelines with calculate() functions
-
-### Phase 3: Advanced Features
-- [ ] Data Analysis system (file upload, query builder, report/dashboard builder)
-- [ ] PDF Editor
-- [ ] Logic Simulator with working wiring
-- [ ] Electrical Simulator
-- [ ] Hydraulic Simulator
-- [ ] Diagram Studio / Canvas
-- [ ] Workflow Builder with categorized function lists
-- [ ] Report Generator
-
-### Phase 4: Learning & Content
-- [ ] Import full course data (1211 lessons, 1211 quizzes)
-- [ ] Build course viewer with markdown rendering
-- [ ] Build quiz system
-- [ ] Build simulation viewer
-
----
-
-## 6. Critical Files Reference
-
-### Original Repo Key Files
-- Server: `/home/z/EngiSuite-Analytics-original/src/server.ts`
-- Database Service: `/home/z/EngiSuite-Analytics-original/src/services/database.service.ts` (already uses sql.js!)
-- Calculation Engine: `/home/z/EngiSuite-Analytics-original/src/services/calculationEngine.service.ts`
-- Report Generator: `/home/z/EngiSuite-Analytics-original/src/services/reportGenerator.service.ts`
-- Local Pipelines: `/home/z/EngiSuite-Analytics-original/src/routes/localPipelines.routes.ts`
-- Engineering Pipelines Data: `/home/z/EngiSuite-Analytics-original/src/data/engineeringPipelines.ts`
-- Pipeline Data: `/home/z/EngiSuite-Analytics-original/src/data/pipelines/*.ts`
-- VDA Context: `/home/z/EngiSuite-Analytics-original/frontend-react/src/contexts/VDADataContext.jsx`
-- Logic Simulator: `/home/z/EngiSuite-Analytics-original/frontend-react/src/pages/LogicSimulatorPage.jsx`
-- PDF Editor: `/home/z/EngiSuite-Analytics-original/frontend-react/src/pages/PDFEditorPage.jsx`
-- Electrical Simulator: `/home/z/EngiSuite-Analytics-original/frontend-react/src/components/simulator/`
-- Learning Simulations: `/home/z/EngiSuite-Analytics-original/frontend-react/src/components/learning/simulations/`
-
-### Database Files
-- engmastery.db: `/home/z/my-project/upload/Databases_extracted/Databases/engmastery.db`
-- courses.db: `/home/z/my-project/upload/Databases_extracted/Databases/courses.db`
-- workflows.db: `/home/z/my-project/upload/Databases_extracted/Databases/workflows.db`
-- users.db: `/home/z/my-project/upload/Databases_extracted/Databases/users.db`
-
----
-
-## 7. Change Log
+## 6. Change Log
 
 | Date | Change |
 |------|--------|
 | 2025-04-18 | Created PROJECT_STATUS.md with full analysis |
 | 2025-04-18 | Analyzed all 4 uploaded databases |
-| 2025-04-18 | Cloned original repo to /home/z/EngiSuite-Analytics-original/ |
-| 2025-04-18 | Read original repo source code (server, database service, calculation engine, local pipelines) |
+| 2025-04-18 | Cloned original repo |
+| 2025-04-18 | Session 2: Started section components, server kept crashing |
+| 2025-04-18 | Session 3: Fixed server, rewrote Calculators with smart auto-calculate |
+| 2025-04-18 | Session 3: Added reverse calculation (bisection solver) |
+| 2025-04-18 | Session 3: Rewrote Data Analysis with 6 tabs (Upload, Explore, Query, Charts, Report, Dashboard) |
+| 2025-04-18 | Session 3: Fixed PDF Editor SSR error (DOMMatrix → dynamic import) |
+| 2025-04-18 | Session 3: Added editable output fields to Pipelines section |
+| 2025-04-18 | Session 3: Workflow Builder rewritten with categorized equations and execution |
+| 2025-04-18 | Session 3: Removed AI Assistant references, fixed header section titles |
+| 2025-04-18 | Session 3: All 13 API routes using sql.js (not Prisma) |

@@ -1,7 +1,6 @@
 'use client'
 
 import { useState, useRef, useEffect, useCallback } from 'react'
-import * as pdfjsLib from 'pdfjs-dist'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -18,8 +17,15 @@ import {
 } from 'lucide-react'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
 
-// Configure PDF.js worker
-pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`
+// Lazy-load pdfjs-dist (avoids DOMMatrix SSR error)
+let pdfjsLib: typeof import('pdfjs-dist') | null = null
+async function getPdfjsLib() {
+  if (!pdfjsLib) {
+    pdfjsLib = await import('pdfjs-dist')
+    pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`
+  }
+  return pdfjsLib
+}
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -733,7 +739,8 @@ export function PDFEditorSection() {
   const loadPdf = useCallback(async (file: File) => {
     try {
       const arrayBuffer = await file.arrayBuffer()
-      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
+      const lib = await getPdfjsLib()
+      const pdf = await lib.getDocument({ data: arrayBuffer }).promise
       setPdfDoc(pdf)
       setPdfFileName(file.name.replace(/\.pdf$/i, ''))
 
