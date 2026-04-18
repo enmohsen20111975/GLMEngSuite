@@ -7,7 +7,11 @@ import { PipelinesSection } from '@/components/sections/pipelines-section'
 import { WorkflowBuilderSection } from '@/components/sections/workflow-builder-section'
 import { UnitConverterSection } from '@/components/sections/unit-converter-section'
 import { LearningSection } from '@/components/sections/learning-section'
-import { AIAssistantSection } from '@/components/sections/ai-assistant-section'
+import { DataAnalysisSection } from '@/components/sections/data-analysis-section'
+import { LogicSimulatorSection } from '@/components/sections/logic-simulator-section'
+import { PDFEditorSection } from '@/components/sections/pdf-editor-section'
+import { ElectricalSimulatorSection } from '@/components/sections/electrical-simulator-section'
+import { DiagramStudioSection } from '@/components/sections/diagram-studio-section'
 import { SettingsSection } from '@/components/sections/settings-section'
 
 const sections = {
@@ -17,7 +21,11 @@ const sections = {
   workflow: WorkflowBuilderSection,
   'unit-converter': UnitConverterSection,
   learning: LearningSection,
-  'ai-assistant': AIAssistantSection,
+  'data-analysis': DataAnalysisSection,
+  'logic-simulator': LogicSimulatorSection,
+  'pdf-editor': PDFEditorSection,
+  'electrical-simulator': ElectricalSimulatorSection,
+  'diagram-studio': DiagramStudioSection,
   settings: SettingsSection,
 }
 

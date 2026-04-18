@@ -6,7 +6,7 @@ const nextConfig: NextConfig = {
     ignoreBuildErrors: true,
   },
   reactStrictMode: false,
-  serverExternalPackages: ['z-ai-web-dev-sdk'],
+  serverExternalPackages: ['z-ai-web-dev-sdk', 'sql.js'],
 };
 
 export default nextConfig;

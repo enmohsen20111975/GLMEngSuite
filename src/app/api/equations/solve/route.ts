@@ -1,99 +1,87 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { evaluate } from 'mathjs'
+import { ensureDatabase } from '@/lib/database'
+import { evaluateFormula } from '@/lib/calculation-engine'
 
 export async function POST(request: NextRequest) {
   try {
+    const db = await ensureDatabase()
     const body = await request.json()
-    const { equationId, inputs: inputValues } = body
+    const { equationId, inputs } = body
 
-    if (!equationId || !inputValues) {
-      return NextResponse.json({ error: 'Missing equationId or inputs' }, { status: 400 })
+    if (!equationId || !inputs) {
+      return NextResponse.json({ success: false, error: 'equationId and inputs are required' }, { status: 400 })
     }
 
-    // Import db dynamically to avoid issues
-    const { db } = await import('@/lib/db')
-
-    const equation = await db.equation.findUnique({
-      where: { id: equationId },
-      include: {
-        inputs: { orderBy: { order: 'asc' } },
-        outputs: { orderBy: { order: 'asc' } },
-      },
-    })
+    // Load equation
+    const equation = db.queryOneWorkflow<any>(
+      'SELECT * FROM equations WHERE id = ? OR equation_id = ?',
+      [equationId, equationId]
+    )
 
     if (!equation) {
-      return NextResponse.json({ error: 'Equation not found' }, { status: 404 })
+      return NextResponse.json({ success: false, error: 'Equation not found' }, { status: 404 })
     }
 
-    // Solve each output
-    const results: Record<string, number> = {}
-    const scope: Record<string, number> = {}
+    // Load inputs/outputs
+    const eqInputs = db.queryWorkflows<any>(
+      'SELECT * FROM equation_inputs WHERE equation_id = ? ORDER BY input_order',
+      [equation.id]
+    )
+    const eqOutputs = db.queryWorkflows<any>(
+      'SELECT * FROM equation_outputs WHERE equation_id = ? ORDER BY output_order',
+      [equation.id]
+    )
 
-    // Map input values to symbols
-    for (const input of equation.inputs) {
-      const val = inputValues[input.symbol] ?? inputValues[input.name]
-      if (val !== undefined) {
-        scope[input.symbol] = Number(val)
+    // Build context from user inputs
+    const context: Record<string, number> = {}
+    for (const inp of eqInputs) {
+      const val = inputs[inp.symbol] ?? inputs[inp.name] ?? inp.default_value
+      if (val !== undefined && val !== null) {
+        context[inp.symbol] = Number(val)
       }
     }
 
-    // Evaluate each output
-    for (const output of equation.outputs) {
+    // Solve using evaluateFormula
+    const outputs: Record<string, number> = {}
+    if (equation.equation || equation.formula) {
+      const formula = equation.equation || equation.formula
+      // Try to evaluate the formula
       try {
-        if (output.formula) {
-          results[output.symbol] = evaluate(output.formula, scope)
-          scope[output.symbol] = results[output.symbol]
-        } else {
-          // Use the main formula
-          results[output.symbol] = evaluate(equation.formula, scope)
-          scope[output.symbol] = results[output.symbol]
-        }
-      } catch (err) {
-        console.error(`Error evaluating output ${output.symbol}:`, err)
-        results[output.symbol] = NaN
+        const result = evaluateFormula(formula, context)
+        outputs['result'] = result
+      } catch {
+        outputs['result'] = 0
       }
     }
 
-    // Save to calculation history (use demo user)
-    try {
-      const demoUser = await db.user.findFirst({ where: { email: 'demo@engisuite.com' } })
-      if (demoUser) {
-        await db.calculationHistory.create({
-          data: {
-            equationId: equation.id,
-            inputs: JSON.stringify(inputValues),
-            outputs: JSON.stringify(results),
-            type: 'equation',
-            userId: demoUser.id,
-          },
-        })
+    // Also try solving individual output formulas
+    for (const out of eqOutputs) {
+      if (out.formula) {
+        try {
+          outputs[out.symbol || out.name] = evaluateFormula(out.formula, context)
+        } catch {
+          // skip
+        }
       }
-    } catch {
-      // Non-critical, don't fail the request
     }
 
     return NextResponse.json({
-      equation: {
-        id: equation.id,
-        name: equation.name,
-        formula: equation.formula,
-      },
-      inputs: equation.inputs.map(i => ({
-        name: i.name,
-        symbol: i.symbol,
-        unit: i.unit,
-        value: scope[i.symbol],
-      })),
-      outputs: equation.outputs.map(o => ({
-        name: o.name,
-        symbol: o.symbol,
-        unit: o.unit,
-        value: results[o.symbol],
-      })),
-      results,
+      success: true,
+      data: {
+        equation: {
+          id: equation.id,
+          name: equation.name,
+          formula: equation.equation || equation.formula,
+          equation_latex: equation.equation_latex,
+        },
+        inputs: context,
+        outputs,
+        inputDefinitions: eqInputs,
+        outputDefinitions: eqOutputs,
+      }
     })
   } catch (error) {
-    console.error('Error solving equation:', error)
-    return NextResponse.json({ error: 'Failed to solve equation' }, { status: 500 })
+    console.error('Solve API error:', error)
+    return NextResponse.json({ success: false, error: 'Failed to solve equation' }, { status: 500 })
   }
 }

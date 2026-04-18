@@ -10,11 +10,15 @@ import {
   Workflow,
   ArrowLeftRight,
   GraduationCap,
-  Bot,
   Settings,
   ChevronLeft,
   ChevronRight,
   Zap,
+  BarChart3,
+  CircuitBoard,
+  FileEdit,
+  Microscope,
+  PenTool,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
@@ -39,8 +43,12 @@ const navItems: { id: SectionId; label: string; icon: React.ElementType; group: 
   { id: 'pipelines', label: 'Pipelines', icon: GitBranch, group: 'Engineering' },
   { id: 'workflow', label: 'Workflow Builder', icon: Workflow, group: 'Engineering' },
   { id: 'unit-converter', label: 'Unit Converter', icon: ArrowLeftRight, group: 'Tools' },
+  { id: 'data-analysis', label: 'Data Analysis', icon: BarChart3, group: 'Tools' },
+  { id: 'pdf-editor', label: 'PDF Editor', icon: FileEdit, group: 'Tools' },
+  { id: 'logic-simulator', label: 'Logic Simulator', icon: CircuitBoard, group: 'Simulators' },
+  { id: 'electrical-simulator', label: 'Electrical Simulator', icon: Microscope, group: 'Simulators' },
+  { id: 'diagram-studio', label: 'Diagram Studio', icon: PenTool, group: 'Simulators' },
   { id: 'learning', label: 'Learning', icon: GraduationCap, group: 'Resources' },
-  { id: 'ai-assistant', label: 'AI Assistant', icon: Bot, group: 'Resources' },
   { id: 'settings', label: 'Settings', icon: Settings, group: 'System' },
 ]
 
@@ -55,12 +63,8 @@ export function SidebarNav({ collapsed, onToggle, mobileOpen, onMobileClose }: S
 
   return (
     <>
-      {/* Mobile overlay */}
       {mobileOpen && (
-        <div
-          className="fixed inset-0 z-40 bg-black/50 lg:hidden"
-          onClick={onMobileClose}
-        />
+        <div className="fixed inset-0 z-40 bg-black/50 lg:hidden" onClick={onMobileClose} />
       )}
 
       <aside
@@ -70,7 +74,6 @@ export function SidebarNav({ collapsed, onToggle, mobileOpen, onMobileClose }: S
           mobileOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
         )}
       >
-        {/* Logo / Brand */}
         <div className={cn(
           'flex h-14 items-center border-b px-4 gap-3',
           collapsed && 'justify-center px-2'
@@ -86,7 +89,6 @@ export function SidebarNav({ collapsed, onToggle, mobileOpen, onMobileClose }: S
           )}
         </div>
 
-        {/* Navigation */}
         <ScrollArea className="flex-1 py-2">
           <TooltipProvider delayDuration={0}>
             {Object.entries(groups).map(([group, items], groupIdx) => (
@@ -98,7 +100,7 @@ export function SidebarNav({ collapsed, onToggle, mobileOpen, onMobileClose }: S
                     </span>
                   </div>
                 )}
-                {groupIdx === 1 && collapsed && (
+                {groupIdx > 0 && collapsed && (
                   <Separator className="my-2 mx-2 w-auto" />
                 )}
                 <div className="space-y-0.5 px-2">
@@ -136,12 +138,8 @@ export function SidebarNav({ collapsed, onToggle, mobileOpen, onMobileClose }: S
                     if (collapsed) {
                       return (
                         <Tooltip key={item.id}>
-                          <TooltipTrigger asChild>
-                            {button}
-                          </TooltipTrigger>
-                          <TooltipContent side="right" className="font-medium">
-                            {item.label}
-                          </TooltipContent>
+                          <TooltipTrigger asChild>{button}</TooltipTrigger>
+                          <TooltipContent side="right" className="font-medium">{item.label}</TooltipContent>
                         </Tooltip>
                       )
                     }
@@ -154,19 +152,9 @@ export function SidebarNav({ collapsed, onToggle, mobileOpen, onMobileClose }: S
           </TooltipProvider>
         </ScrollArea>
 
-        {/* Collapse toggle (desktop only) */}
         <div className="hidden lg:flex border-t p-2">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8 ml-auto"
-            onClick={onToggle}
-          >
-            {collapsed ? (
-              <ChevronRight className="h-4 w-4" />
-            ) : (
-              <ChevronLeft className="h-4 w-4" />
-            )}
+          <Button variant="ghost" size="icon" className="h-8 w-8 ml-auto" onClick={onToggle}>
+            {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
           </Button>
         </div>
       </aside>

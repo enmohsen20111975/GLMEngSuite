@@ -1,112 +1,82 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { evaluate } from 'mathjs'
+import { ensureDatabase } from '@/lib/database'
+import { getCalculationEngine } from '@/lib/calculation-engine'
+import { getPipelineById, ENGINEERING_PIPELINES } from '@/lib/engineering-pipelines'
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { pipelineId, stepInputs } = body
+    const { pipelineId, inputs } = body
 
-    if (!pipelineId) {
-      return NextResponse.json({ error: 'Missing pipelineId' }, { status: 400 })
+    if (!pipelineId || !inputs) {
+      return NextResponse.json({ success: false, error: 'pipelineId and inputs are required' }, { status: 400 })
     }
 
-    const { db } = await import('@/lib/db')
+    // Try local pipeline first
+    const localPipeline = getPipelineById(pipelineId)
+    if (localPipeline) {
+      const stepResults: any[] = []
+      const accumulatedInputs: Record<string, number | string> = { ...inputs }
 
-    const pipeline = await db.calculationPipeline.findUnique({
-      where: { id: pipelineId },
-      include: {
-        steps: { orderBy: { order: 'asc' } },
-      },
-    })
+      for (const step of localPipeline.steps) {
+        // Fill inputs from previous step outputs
+        const stepInputs: Record<string, number | string> = {}
+        for (const inp of step.inputs) {
+          const val = accumulatedInputs[inp.name] ?? inputs[inp.name] ?? inp.default
+          if (val !== undefined) stepInputs[inp.name] = val
+        }
 
-    if (!pipeline) {
-      return NextResponse.json({ error: 'Pipeline not found' }, { status: 404 })
-    }
-
-    // Execute each step sequentially
-    const scope: Record<string, number> = {}
-    const stepResults = []
-
-    for (const step of pipeline.steps) {
-      const stepInput = stepInputs?.[step.id] ?? {}
-
-      // Add step inputs to scope
-      if (step.inputSchema) {
         try {
-          const schema = JSON.parse(step.inputSchema)
-          for (const [key, config] of Object.entries(schema as Record<string, unknown>)) {
-            const cfg = config as { symbol?: string; default?: number }
-            const symbol = cfg.symbol || key
-            const value = stepInput[key] ?? cfg.default
-            if (value !== undefined) {
-              scope[symbol] = Number(value)
-            }
-          }
-        } catch {
-          // If schema parsing fails, use raw inputs
-          for (const [key, value] of Object.entries(stepInput)) {
-            scope[key] = Number(value)
-          }
+          const outputs = step.calculate(stepInputs)
+          stepResults.push({
+            step_number: step.stepNumber,
+            step_name: step.name,
+            inputs: stepInputs,
+            outputs,
+            formula_display: step.formula_display,
+            standard_ref: step.standard_ref,
+            success: true,
+          })
+          Object.assign(accumulatedInputs, outputs)
+        } catch (err: any) {
+          stepResults.push({
+            step_number: step.stepNumber,
+            step_name: step.name,
+            inputs: stepInputs,
+            outputs: {},
+            error: err.message,
+            success: false,
+          })
+          break
         }
       }
 
-      // Evaluate formula
-      let result: Record<string, number> = {}
-      if (step.formula) {
-        try {
-          // Support multiple formulas separated by semicolons
-          const formulas = step.formula.split(';').map(f => f.trim()).filter(Boolean)
-          for (const formula of formulas) {
-            const evaluated = evaluate(formula, scope)
-            if (typeof evaluated === 'object' && evaluated !== null) {
-              Object.assign(result, evaluated)
-              Object.assign(scope, evaluated)
-            } else if (formula.includes('=')) {
-              const varName = formula.split('=')[0].trim()
-              result[varName] = evaluated
-              scope[varName] = evaluated
-            }
-          }
-        } catch (err) {
-          console.error(`Error evaluating step ${step.name}:`, err)
-          result = { error: NaN }
+      return NextResponse.json({
+        success: true,
+        data: {
+          pipeline_id: pipelineId,
+          pipeline_name: localPipeline.name,
+          is_local: true,
+          steps: stepResults,
         }
-      }
-
-      stepResults.push({
-        stepId: step.id,
-        stepName: step.name,
-        stepOrder: step.order,
-        inputs: { ...stepInput },
-        outputs: result,
       })
     }
 
-    // Save to history
-    try {
-      const demoUser = await db.user.findFirst({ where: { email: 'demo@engisuite.com' } })
-      if (demoUser) {
-        await db.calculationHistory.create({
-          data: {
-            pipelineId: pipeline.id,
-            inputs: JSON.stringify(stepInputs),
-            outputs: JSON.stringify(stepResults),
-            type: 'pipeline',
-            userId: demoUser.id,
-          },
-        })
-      }
-    } catch {
-      // Non-critical
-    }
+    // Fall back to DB pipeline
+    const db = await ensureDatabase()
+    const engine = getCalculationEngine()
+    const result = engine.executePipeline(pipelineId, inputs)
 
     return NextResponse.json({
-      pipeline: { id: pipeline.id, name: pipeline.name },
-      steps: stepResults,
-      scope,
+      success: result.success,
+      data: {
+        pipeline_id: pipelineId,
+        is_local: false,
+        ...result,
+      }
     })
   } catch (error) {
-    console.error('Error executing pipeline:', error)
-    return NextResponse.json({ error: 'Failed to execute pipeline' }, { status: 500 })
+    console.error('Pipeline execute API error:', error)
+    return NextResponse.json({ success: false, error: 'Failed to execute pipeline' }, { status: 500 })
   }
 }

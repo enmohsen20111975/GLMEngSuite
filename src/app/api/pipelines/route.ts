@@ -1,25 +1,66 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { db } from '@/lib/db'
+import { ensureDatabase } from '@/lib/database'
+import { ENGINEERING_PIPELINES } from '@/lib/engineering-pipelines'
 
 export async function GET(request: NextRequest) {
   try {
-    const searchParams = request.nextUrl.searchParams
+    const db = await ensureDatabase()
+    const { searchParams } = new URL(request.url)
     const domain = searchParams.get('domain')
+    const search = searchParams.get('search')
 
-    const where: Record<string, unknown> = {}
-    if (domain) where.domain = domain
+    // DB pipelines
+    let sql = `SELECT cp.*, COUNT(cs.id) as step_count
+      FROM calculation_pipelines cp
+      LEFT JOIN calculation_steps cs ON cp.id = cs.pipeline_id AND cs.is_active = 1
+      WHERE cp.is_active = 1`
+    const params: unknown[] = []
 
-    const pipelines = await db.calculationPipeline.findMany({
-      where,
-      include: {
-        steps: { orderBy: { order: 'asc' } },
-      },
-      orderBy: { name: 'asc' },
-    })
+    if (domain) {
+      sql += ` AND cp.domain = ?`
+      params.push(domain)
+    }
+    if (search) {
+      sql += ` AND (cp.name LIKE ? OR cp.description LIKE ?)`
+      params.push(`%${search}%`, `%${search}%`)
+    }
 
-    return NextResponse.json(pipelines)
+    sql += ` GROUP BY cp.id ORDER BY cp.name`
+    const dbPipelines = db.queryWorkflows(sql, params)
+
+    // Local engineering pipelines
+    const localPipelines = ENGINEERING_PIPELINES.map(p => ({
+      id: p.id,
+      pipeline_id: p.id,
+      name: p.name,
+      description: p.description,
+      domain: p.domain,
+      difficulty_level: p.difficulty,
+      estimated_time: p.estimated_time,
+      step_count: p.steps.length,
+      is_local: true,
+      icon: p.icon,
+    }))
+
+    // Combine
+    let allPipelines = [
+      ...dbPipelines.map(p => ({ ...p, is_local: false })),
+      ...localPipelines,
+    ]
+
+    if (domain) {
+      allPipelines = allPipelines.filter(p => p.domain === domain)
+    }
+    if (search) {
+      const s = search.toLowerCase()
+      allPipelines = allPipelines.filter(p =>
+        p.name.toLowerCase().includes(s) || (p.description || '').toLowerCase().includes(s)
+      )
+    }
+
+    return NextResponse.json({ success: true, data: allPipelines })
   } catch (error) {
-    console.error('Error fetching pipelines:', error)
-    return NextResponse.json({ error: 'Failed to fetch pipelines' }, { status: 500 })
+    console.error('Pipelines API error:', error)
+    return NextResponse.json({ success: false, error: 'Failed to fetch pipelines' }, { status: 500 })
   }
 }

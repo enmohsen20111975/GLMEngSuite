@@ -1,411 +1,395 @@
 'use client'
 
-import * as React from 'react'
-import { motion } from 'framer-motion'
-import {
-  GitBranch,
-  ChevronRight,
-  Play,
-  RotateCcw,
-  CheckCircle2,
-  Circle,
-  Loader2,
-  FileText,
-} from 'lucide-react'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Button } from '@/components/ui/button'
+import { useState, useEffect, useCallback } from 'react'
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
+import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { ScrollArea } from '@/components/ui/scroll-area'
+import { Separator } from '@/components/ui/separator'
 import { Progress } from '@/components/ui/progress'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
-import { toast } from 'sonner'
+import { Search, Play, GitBranch, ChevronRight, ChevronLeft, CheckCircle2, XCircle, FileText, AlertTriangle } from 'lucide-react'
+import { ENGINEERING_PIPELINES, type EngineeringPipeline, type PipelineStep } from '@/lib/engineering-pipelines'
 
-interface PipelineStep {
+interface PipelineItem {
   id: string
   name: string
-  description: string | null
-  order: number
-  formula: string | null
-  inputSchema: string | null
-  outputSchema: string | null
-  helperText: string | null
-}
-
-interface Pipeline {
-  id: string
-  name: string
-  description: string | null
+  description: string
   domain: string
-  category: string | null
-  difficulty: string
-  steps: PipelineStep[]
+  difficulty_level: string
+  estimated_time: string
+  step_count: number
+  is_local: boolean
+  icon: string
 }
 
-const domainColors: Record<string, string> = {
-  electrical: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400',
-  mechanical: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
-  civil: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400',
-  hvac: 'bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-400',
-  hydraulic: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
+interface StepResult {
+  step_number: number
+  step_name: string
+  inputs: Record<string, number | string>
+  outputs: Record<string, number | string | boolean>
+  formula_display?: string[]
+  standard_ref?: string
+  success: boolean
+  error?: string
 }
 
 export function PipelinesSection() {
-  const [pipelines, setPipelines] = React.useState<Pipeline[]>([])
-  const [loading, setLoading] = React.useState(true)
-  const [selectedPipeline, setSelectedPipeline] = React.useState<Pipeline | null>(null)
-  const [currentStep, setCurrentStep] = React.useState(0)
-  const [stepInputs, setStepInputs] = React.useState<Record<string, Record<string, string>>>({})
-  const [executing, setExecuting] = React.useState(false)
-  const [stepResults, setStepResults] = React.useState<Array<{
-    stepName: string
-    outputs: Record<string, number>
-  }> | null>(null)
+  const [pipelines, setPipelines] = useState<PipelineItem[]>([])
+  const [loading, setLoading] = useState(true)
+  const [search, setSearch] = useState('')
+  const [domainFilter, setDomainFilter] = useState('all')
+  const [selectedPipeline, setSelectedPipeline] = useState<EngineeringPipeline | null>(null)
+  const [currentStep, setCurrentStep] = useState(0)
+  const [stepInputs, setStepInputs] = useState<Record<string, Record<string, number | string>>>({})
+  const [stepResults, setStepResults] = useState<StepResult[]>([])
+  const [accumulated, setAccumulated] = useState<Record<string, number | string>>({})
 
-  React.useEffect(() => {
-    async function loadPipelines() {
-      try {
-        const res = await fetch('/api/pipelines')
-        if (res.ok) {
-          setPipelines(await res.json())
-        }
-      } catch (err) {
-        console.error('Failed to load pipelines:', err)
-      } finally {
-        setLoading(false)
-      }
-    }
-    loadPipelines()
+  useEffect(() => {
+    fetch('/api/pipelines')
+      .then(r => r.json())
+      .then(d => { if (d.success) setPipelines(d.data) })
+      .catch(console.error)
+      .finally(() => setLoading(false))
   }, [])
 
-  const selectPipeline = (p: Pipeline) => {
-    setSelectedPipeline(p)
+  const handleSelectPipeline = (p: PipelineItem) => {
+    const local = ENGINEERING_PIPELINES.find(ep => ep.id === p.id)
+    if (local) {
+      setSelectedPipeline(local)
+    } else {
+      // For DB pipelines, create a simplified version
+      setSelectedPipeline({
+        id: p.id,
+        name: p.name,
+        description: p.description || '',
+        domain: p.domain as any,
+        difficulty: (p.difficulty_level as any) || 'intermediate',
+        estimated_time: p.estimated_time || '',
+        icon: p.icon || '📊',
+        steps: [],
+      })
+    }
     setCurrentStep(0)
-    setStepResults(null)
-    const inputs: Record<string, Record<string, string>> = {}
-    p.steps.forEach(step => {
-      if (step.inputSchema) {
-        try {
-          const schema = JSON.parse(step.inputSchema)
-          const defaults: Record<string, string> = {}
-          for (const [key, config] of Object.entries(schema as Record<string, unknown>)) {
-            const cfg = config as { default?: number; symbol?: string }
-            defaults[key] = cfg.default?.toString() || ''
-          }
-          inputs[step.id] = defaults
-        } catch {
-          inputs[step.id] = {}
-        }
-      }
-    })
-    setStepInputs(inputs)
+    setStepInputs({})
+    setStepResults([])
+    setAccumulated({})
   }
 
-  const parseInputSchema = (schema: string | null) => {
-    if (!schema) return []
-    try {
-      const parsed = JSON.parse(schema)
-      return Object.entries(parsed as Record<string, unknown>).map(([key, config]) => {
-        const cfg = config as { symbol?: string; unit?: string; default?: number; description?: string; min?: number; max?: number }
-        return {
-          key,
-          symbol: cfg.symbol || key,
-          unit: cfg.unit || '',
-          default: cfg.default,
-          description: cfg.description || '',
-          min: cfg.min,
-          max: cfg.max,
-        }
-      })
-    } catch {
-      return []
-    }
-  }
-
-  const handleExecute = async () => {
+  const handleCalculateStep = () => {
     if (!selectedPipeline) return
-    setExecuting(true)
+    const step = selectedPipeline.steps[currentStep]
+    if (!step) return
+
+    const inputs = stepInputs[currentStep] || {}
+
+    // Fill fromPreviousStep
+    const filledInputs: Record<string, number | string> = {}
+    for (const inp of step.inputs) {
+      const val = inputs[inp.name] ?? accumulated[inp.name] ?? accumulated[inp.fromPreviousStep || ''] ?? inp.default
+      if (val !== undefined) filledInputs[inp.name] = val
+    }
+
     try {
-      // Convert string inputs to numbers
-      const numericInputs: Record<string, Record<string, number>> = {}
-      for (const [stepId, inputs] of Object.entries(stepInputs)) {
-        numericInputs[stepId] = {}
-        for (const [key, val] of Object.entries(inputs)) {
-          if (val !== '' && !isNaN(Number(val))) {
-            numericInputs[stepId][key] = Number(val)
-          }
-        }
+      const outputs = step.calculate(filledInputs)
+      const result: StepResult = {
+        step_number: step.stepNumber,
+        step_name: step.name,
+        inputs: filledInputs,
+        outputs,
+        formula_display: step.formula_display,
+        standard_ref: step.standard_ref,
+        success: true,
       }
-
-      const res = await fetch('/api/pipelines/execute', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          pipelineId: selectedPipeline.id,
-          stepInputs: numericInputs,
-        }),
-      })
-
-      if (res.ok) {
-        const data = await res.json()
-        setStepResults(data.steps)
-        setCurrentStep(selectedPipeline.steps.length)
-        toast.success('Pipeline executed successfully!')
-      } else {
-        toast.error('Failed to execute pipeline')
+      setStepResults(prev => [...prev.filter(r => r.step_number !== step.stepNumber), result])
+      setAccumulated(prev => ({ ...prev, ...filledInputs, ...outputs }))
+      if (currentStep < selectedPipeline.steps.length - 1) {
+        setCurrentStep(currentStep + 1)
       }
-    } catch (err) {
-      console.error('Execute error:', err)
-      toast.error('Error executing pipeline')
-    } finally {
-      setExecuting(false)
+    } catch (err: any) {
+      const result: StepResult = {
+        step_number: step.stepNumber,
+        step_name: step.name,
+        inputs: filledInputs,
+        outputs: {},
+        success: false,
+        error: err.message,
+      }
+      setStepResults(prev => [...prev.filter(r => r.step_number !== step.stepNumber), result])
     }
   }
 
-  const progress = selectedPipeline
-    ? Math.round((currentStep / selectedPipeline.steps.length) * 100)
-    : 0
+  const handleRunAll = async () => {
+    if (!selectedPipeline) return
+    setStepResults([])
+    setCurrentStep(0)
+
+    const allInputs: Record<string, number | string> = {}
+    const allResults: StepResult[] = {}
+
+    for (const step of selectedPipeline.steps) {
+      const filledInputs: Record<string, number | string> = {}
+      for (const inp of step.inputs) {
+        const val = stepInputs[step.stepNumber]?.[inp.name] ?? allInputs[inp.name] ?? allInputs[inp.fromPreviousStep || ''] ?? inp.default
+        if (val !== undefined) filledInputs[inp.name] = val
+      }
+
+      try {
+        const outputs = step.calculate(filledInputs)
+        allResults[step.stepNumber] = {
+          step_number: step.stepNumber,
+          step_name: step.name,
+          inputs: filledInputs,
+          outputs,
+          formula_display: step.formula_display,
+          standard_ref: step.standard_ref,
+          success: true,
+        }
+        Object.assign(allInputs, filledInputs, outputs)
+      } catch (err: any) {
+        allResults[step.stepNumber] = {
+          step_number: step.stepNumber,
+          step_name: step.name,
+          inputs: filledInputs,
+          outputs: {},
+          success: false,
+          error: err.message,
+        }
+        break
+      }
+    }
+
+    setStepResults(Object.values(allResults))
+    setAccumulated(allInputs)
+    setCurrentStep(selectedPipeline.steps.length - 1)
+  }
+
+  const filteredPipelines = pipelines.filter(p => {
+    if (domainFilter !== 'all' && p.domain !== domainFilter) return false
+    if (search && !p.name.toLowerCase().includes(search.toLowerCase()) && !(p.description || '').toLowerCase().includes(search.toLowerCase())) return false
+    return true
+  })
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      className="space-y-4"
-    >
+    <div className="space-y-6">
       <div>
-        <h2 className="text-xl font-bold flex items-center gap-2">
-          <GitBranch className="h-5 w-5 text-emerald-600" />
-          Calculation Pipelines
-        </h2>
-        <p className="text-sm text-muted-foreground mt-1">
-          Multi-step engineering calculations with guided workflows
-        </p>
+        <h1 className="text-2xl font-bold tracking-tight">Engineering Pipelines</h1>
+        <p className="text-muted-foreground">Multi-step engineering calculations with IEC/EN/NEC standards compliance</p>
       </div>
 
-      <div className="grid lg:grid-cols-[300px_1fr] gap-4">
+      <div className="flex flex-col lg:flex-row gap-6">
         {/* Pipeline List */}
-        <Card className="lg:max-h-[calc(100vh-220px)] overflow-hidden flex flex-col">
-          <CardHeader className="pb-2 shrink-0">
-            <CardTitle className="text-sm">Pipelines ({pipelines.length})</CardTitle>
-          </CardHeader>
-          <CardContent className="p-2 overflow-y-auto flex-1">
-            {loading ? (
-              <div className="space-y-2">
-                {[1, 2, 3].map(i => (
-                  <div key={i} className="h-20 rounded-lg bg-muted animate-pulse" />
-                ))}
-              </div>
-            ) : (
-              <div className="space-y-1">
-                {pipelines.map(p => (
-                  <button
-                    key={p.id}
-                    onClick={() => selectPipeline(p)}
-                    className={`w-full text-left p-3 rounded-lg transition-all hover:bg-accent ${
-                      selectedPipeline?.id === p.id
-                        ? 'bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800'
-                        : 'border border-transparent'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-sm font-medium">{p.name}</span>
-                      <Badge className={`text-[10px] shrink-0 ${domainColors[p.domain] || ''}`}>
-                        {p.domain}
-                      </Badge>
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-1 line-clamp-2">
-                      {p.description || `${p.steps.length} steps`}
-                    </p>
-                    <div className="flex items-center gap-1 mt-2">
-                      {p.steps.map((_, i) => (
-                        <div key={i} className="h-1 flex-1 rounded-full bg-muted" />
-                      ))}
-                    </div>
-                  </button>
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
+        <div className="lg:w-80 space-y-4">
+          <div className="relative">
+            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+            <Input placeholder="Search pipelines..." className="pl-8" value={search} onChange={e => setSearch(e.target.value)} />
+          </div>
+          <Select value={domainFilter} onValueChange={setDomainFilter}>
+            <SelectTrigger><SelectValue placeholder="Filter by domain" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Domains</SelectItem>
+              <SelectItem value="electrical">Electrical</SelectItem>
+              <SelectItem value="mechanical">Mechanical</SelectItem>
+              <SelectItem value="civil">Civil</SelectItem>
+              <SelectItem value="hvac">HVAC</SelectItem>
+              <SelectItem value="hydraulics">Hydraulics</SelectItem>
+            </SelectContent>
+          </Select>
 
-        {/* Pipeline Wizard */}
-        <div className="space-y-4">
+          <ScrollArea className="h-[calc(100vh-280px)]">
+            <div className="space-y-2">
+              {filteredPipelines.map(p => (
+                <button
+                  key={p.id}
+                  onClick={() => handleSelectPipeline(p)}
+                  className={`w-full text-left p-3 rounded-lg border transition-colors ${
+                    selectedPipeline?.id === p.id ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-900/20' : 'hover:bg-muted/50'
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="text-lg">{p.icon}</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="font-medium text-sm truncate">{p.name}</div>
+                      <div className="flex gap-1 mt-1">
+                        <Badge variant="secondary" className="text-[10px] capitalize">{p.domain}</Badge>
+                        <Badge variant="outline" className="text-[10px]">{p.step_count} steps</Badge>
+                      </div>
+                    </div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </ScrollArea>
+        </div>
+
+        {/* Pipeline Detail */}
+        <div className="flex-1">
           {selectedPipeline ? (
-            <>
-              {/* Pipeline Header */}
+            <div className="space-y-4">
               <Card>
-                <CardHeader className="pb-3">
-                  <div className="flex items-center justify-between">
+                <CardHeader>
+                  <div className="flex items-center gap-2">
+                    <span className="text-2xl">{selectedPipeline.icon}</span>
                     <div>
                       <CardTitle>{selectedPipeline.name}</CardTitle>
-                      <CardDescription className="mt-1">
-                        {selectedPipeline.description || `A ${selectedPipeline.steps.length}-step ${selectedPipeline.domain} calculation pipeline`}
-                      </CardDescription>
+                      <CardDescription>{selectedPipeline.description}</CardDescription>
                     </div>
-                    <Badge className={domainColors[selectedPipeline.domain] || ''}>
-                      {selectedPipeline.domain}
-                    </Badge>
                   </div>
-                  <div className="mt-3">
-                    <div className="flex items-center justify-between text-xs text-muted-foreground mb-1">
-                      <span>Progress</span>
-                      <span>{progress}%</span>
-                    </div>
-                    <Progress value={progress} className="h-2" />
+                  <div className="flex gap-2 mt-2">
+                    <Badge className="capitalize">{selectedPipeline.domain}</Badge>
+                    <Badge variant="outline">{selectedPipeline.difficulty}</Badge>
+                    <Badge variant="outline">{selectedPipeline.estimated_time}</Badge>
+                    <Badge variant="outline">{selectedPipeline.steps.length} steps</Badge>
                   </div>
                 </CardHeader>
-              </Card>
+                <CardContent>
+                  {selectedPipeline.steps.length > 0 && (
+                    <>
+                      <div className="flex items-center justify-between mb-4">
+                        <Button variant="outline" size="sm" onClick={() => setCurrentStep(Math.max(0, currentStep - 1))} disabled={currentStep === 0}>
+                          <ChevronLeft className="h-4 w-4 mr-1" /> Previous
+                        </Button>
+                        <span className="text-sm font-medium">
+                          Step {currentStep + 1} of {selectedPipeline.steps.length}
+                        </span>
+                        <Button variant="outline" size="sm" onClick={() => setCurrentStep(Math.min(selectedPipeline.steps.length - 1, currentStep + 1))} disabled={currentStep >= selectedPipeline.steps.length - 1}>
+                          Next <ChevronRight className="h-4 w-4 ml-1" />
+                        </Button>
+                      </div>
 
-              {/* Steps */}
-              <div className="space-y-3">
-                {selectedPipeline.steps.map((step, idx) => {
-                  const isCompleted = stepResults && idx < currentStep
-                  const isCurrent = idx === currentStep && !stepResults
-                  const fields = parseInputSchema(step.inputSchema)
+                      <Progress value={((currentStep + 1) / selectedPipeline.steps.length) * 100} className="mb-4" />
 
-                  return (
-                    <Card
-                      key={step.id}
-                      className={`transition-all ${
-                        isCurrent
-                          ? 'border-emerald-300 dark:border-emerald-700 shadow-md'
-                          : isCompleted
-                          ? 'opacity-75'
-                          : 'opacity-50'
-                      }`}
-                    >
-                      <CardHeader className="pb-2">
-                        <div className="flex items-center gap-3">
-                          <div className={`h-8 w-8 rounded-full flex items-center justify-center shrink-0 text-sm font-bold ${
-                            isCompleted
-                              ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
-                              : isCurrent
-                              ? 'bg-emerald-600 text-white'
-                              : 'bg-muted text-muted-foreground'
-                          }`}>
-                            {isCompleted ? (
-                              <CheckCircle2 className="h-4 w-4" />
-                            ) : (
-                              idx + 1
+                      {/* Current Step */}
+                      {(() => {
+                        const step = selectedPipeline.steps[currentStep]
+                        if (!step) return null
+                        return (
+                          <div className="space-y-4">
+                            <div>
+                              <h3 className="font-semibold text-lg">{step.name}</h3>
+                              <p className="text-sm text-muted-foreground">{step.description}</p>
+                              {step.standard_ref && (
+                                <Badge variant="outline" className="mt-1 text-[10px]">{step.standard_ref}</Badge>
+                              )}
+                            </div>
+
+                            {step.formula_display && step.formula_display.length > 0 && (
+                              <div className="bg-muted p-3 rounded-lg font-mono text-xs space-y-1">
+                                {step.formula_display.map((f, i) => (
+                                  <div key={i}>{f}</div>
+                                ))}
+                              </div>
                             )}
-                          </div>
-                          <div className="flex-1">
-                            <CardTitle className="text-sm">{step.name}</CardTitle>
-                            {step.description && (
-                              <CardDescription className="text-xs">{step.description}</CardDescription>
-                            )}
-                          </div>
-                          {step.helperText && (
-                            <Badge variant="outline" className="text-[10px]">
-                              {step.helperText}
-                            </Badge>
-                          )}
-                        </div>
-                      </CardHeader>
-                      {(isCurrent || (isCompleted && stepResults)) && (
-                        <CardContent>
-                          {isCurrent && fields.length > 0 && (
-                            <div className="grid sm:grid-cols-2 gap-3 mt-2">
-                              {fields.map(field => (
-                                <div key={field.key} className="space-y-1">
+
+                            <Separator />
+
+                            <div className="grid gap-3 md:grid-cols-2">
+                              {step.inputs.map(inp => (
+                                <div key={inp.name} className="space-y-1">
                                   <label className="text-xs font-medium">
-                                    {field.description || field.key}{' '}
-                                    <span className="text-muted-foreground font-mono">
-                                      ({field.symbol})
-                                    </span>
-                                    {field.unit && (
-                                      <span className="text-muted-foreground"> [{field.unit}]</span>
-                                    )}
+                                    {inp.label}
+                                    {inp.unit && <span className="text-muted-foreground ml-1">({inp.unit})</span>}
                                   </label>
-                                  <Input
-                                    type="number"
-                                    placeholder={field.default?.toString() || '0'}
-                                    value={stepInputs[step.id]?.[field.key] || ''}
-                                    onChange={(e) =>
-                                      setStepInputs(prev => ({
+                                  {inp.type === 'select' && inp.options ? (
+                                    <Select
+                                      value={String(stepInputs[currentStep]?.[inp.name] ?? inp.default ?? '')}
+                                      onValueChange={v => setStepInputs(prev => ({
                                         ...prev,
-                                        [step.id]: {
-                                          ...prev[step.id],
-                                          [field.key]: e.target.value,
-                                        },
-                                      }))
-                                    }
-                                    step="any"
-                                  />
+                                        [currentStep]: { ...prev[currentStep], [inp.name]: v }
+                                      }))}
+                                    >
+                                      <SelectTrigger><SelectValue /></SelectTrigger>
+                                      <SelectContent>
+                                        {inp.options.map(opt => (
+                                          <SelectItem key={String(opt.value)} value={String(opt.value)}>{opt.label}</SelectItem>
+                                        ))}
+                                      </SelectContent>
+                                    </Select>
+                                  ) : (
+                                    <Input
+                                      type="number"
+                                      value={stepInputs[currentStep]?.[inp.name] ?? accumulated[inp.name] ?? accumulated[inp.fromPreviousStep || ''] ?? inp.default ?? ''}
+                                      onChange={e => setStepInputs(prev => ({
+                                        ...prev,
+                                        [currentStep]: { ...prev[currentStep], [inp.name]: parseFloat(e.target.value) || 0 }
+                                      }))}
+                                    />
+                                  )}
+                                  {inp.help && <p className="text-[10px] text-muted-foreground">{inp.help}</p>}
                                 </div>
                               ))}
                             </div>
-                          )}
-                          {isCompleted && stepResults?.[idx] && (
-                            <div className="mt-2 p-2 rounded bg-emerald-50 dark:bg-emerald-900/20">
-                              <p className="text-xs font-medium text-emerald-700 dark:text-emerald-400 mb-1">Results:</p>
-                              <div className="grid sm:grid-cols-2 gap-2">
-                                {Object.entries(stepResults[idx].outputs).map(([key, value]) => (
-                                  <div key={key} className="text-xs">
-                                    <span className="font-mono">{key}:</span>{' '}
-                                    <span className="font-bold">
-                                      {typeof value === 'number' ? value.toFixed(4) : value}
-                                    </span>
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                        </CardContent>
-                      )}
-                    </Card>
-                  )
-                })}
-              </div>
 
-              {/* Action Buttons */}
-              <div className="flex gap-3">
-                <Button
-                  onClick={handleExecute}
-                  disabled={executing}
-                  className="flex-1 bg-emerald-600 hover:bg-emerald-700"
-                >
-                  {executing ? (
-                    <span className="flex items-center gap-2">
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                      Executing Pipeline...
-                    </span>
-                  ) : stepResults ? (
-                    <span className="flex items-center gap-2">
-                      <RotateCcw className="h-4 w-4" />
-                      Re-execute Pipeline
-                    </span>
-                  ) : (
-                    <span className="flex items-center gap-2">
-                      <Play className="h-4 w-4" />
-                      Execute Pipeline
-                    </span>
+                            <div className="flex gap-2">
+                              <Button onClick={handleCalculateStep} className="flex-1">
+                                <Play className="h-4 w-4 mr-2" />
+                                Calculate Step {step.stepNumber}
+                              </Button>
+                              <Button onClick={handleRunAll} variant="outline" className="flex-1">
+                                <GitBranch className="h-4 w-4 mr-2" />
+                                Run All Steps
+                              </Button>
+                            </div>
+                          </div>
+                        )
+                      })()}
+                    </>
                   )}
-                </Button>
-                {stepResults && (
-                  <Button variant="outline" className="flex items-center gap-2">
-                    <FileText className="h-4 w-4" />
-                    Export Report
-                  </Button>
-                )}
-              </div>
-            </>
+                </CardContent>
+              </Card>
+
+              {/* Results */}
+              {stepResults.length > 0 && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-base flex items-center gap-2">
+                      <FileText className="h-5 w-5" />
+                      Calculation Results
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    {stepResults.map(result => (
+                      <div key={result.step_number} className={`p-3 rounded-lg border ${result.success ? 'border-emerald-200 dark:border-emerald-800' : 'border-red-200 dark:border-red-800'}`}>
+                        <div className="flex items-center gap-2 mb-2">
+                          {result.success ? (
+                            <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                          ) : (
+                            <XCircle className="h-4 w-4 text-red-600" />
+                          )}
+                          <span className="font-medium text-sm">Step {result.step_number}: {result.step_name}</span>
+                        </div>
+                        {result.success ? (
+                          <div className="grid gap-1 md:grid-cols-2">
+                            {Object.entries(result.outputs).map(([key, val]) => (
+                              <div key={key} className="flex justify-between text-xs bg-muted p-1.5 rounded">
+                                <span>{key}</span>
+                                <span className="font-mono">{typeof val === 'boolean' ? (val ? '✅ PASS' : '❌ FAIL') : String(val)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-sm text-red-600 flex items-center gap-1">
+                            <AlertTriangle className="h-3 w-3" /> {result.error}
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </CardContent>
+                </Card>
+              )}
+            </div>
           ) : (
-            <Card className="flex flex-col items-center justify-center py-16">
-              <GitBranch className="h-12 w-12 text-muted-foreground/30 mb-3" />
-              <h3 className="text-lg font-medium">Select a Pipeline</h3>
-              <p className="text-sm text-muted-foreground mt-1">
-                Choose a calculation pipeline to get started
-              </p>
+            <Card className="flex items-center justify-center h-64">
+              <div className="text-center text-muted-foreground">
+                <GitBranch className="h-12 w-12 mx-auto mb-3 opacity-50" />
+                <p>Select a pipeline to begin</p>
+              </div>
             </Card>
           )}
         </div>
       </div>
-    </motion.div>
+    </div>
   )
 }

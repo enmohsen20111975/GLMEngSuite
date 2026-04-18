@@ -7,7 +7,11 @@ type SectionId =
   | 'workflow' 
   | 'unit-converter' 
   | 'learning' 
-  | 'ai-assistant' 
+  | 'data-analysis'
+  | 'logic-simulator'
+  | 'pdf-editor'
+  | 'electrical-simulator'
+  | 'diagram-studio'
   | 'settings'
 
 interface ActiveSectionStore {
