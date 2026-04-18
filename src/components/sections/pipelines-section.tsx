@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -12,259 +12,17 @@ import { Progress } from '@/components/ui/progress'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import {
   Search, Play, GitBranch, ChevronRight, ChevronLeft, CheckCircle2, XCircle,
-  FileText, AlertTriangle, ArrowRightLeft, Zap, RotateCcw, Info, Variable, Link2
+  FileText, AlertTriangle, ArrowRightLeft, Zap, RotateCcw, Info, Variable, Link2,
+  Loader2
 } from 'lucide-react'
-import { ENGINEERING_PIPELINES, type EngineeringPipeline, type PipelineStep, type PipelineInput, type PipelineOutput } from '@/lib/engineering-pipelines'
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Bidirectional Solver Functions (adapted from calculators-section.tsx)
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * Numerical solver using bisection method.
- * Finds the value of unknownVar such that step.calculate() produces targetOutputName = targetOutputValue.
- */
-function numericalSolveStep(
-  step: PipelineStep,
-  knownValues: Record<string, number | string>,
-  unknownInputName: string,
-  targetOutputName: string,
-  targetOutputValue: number,
-  tolerance: number = 0.001,
-  maxIter: number = 200
-): number | null {
-  // Determine reasonable search bounds based on other input values
-  const numericInputs = Object.values(knownValues).filter(v => typeof v === 'number') as number[]
-  const maxAbs = numericInputs.length > 0 ? Math.max(...numericInputs.map(Math.abs), 1) : 100
-
-  let low = -maxAbs * 100
-  let high = maxAbs * 100
-
-  // Ensure positive bounds for engineering values (most are positive)
-  if (low < 0) low = 0.001
-
-  const evalAt = (x: number): number | null => {
-    try {
-      const inputs = { ...knownValues, [unknownInputName]: x }
-      const outputs = step.calculate(inputs)
-      const val = outputs[targetOutputName]
-      if (typeof val === 'number' && isFinite(val)) return val
-      return null
-    } catch {
-      return null
-    }
-  }
-
-  // Evaluate at bounds
-  let fLow = evalAt(low)
-  let fHigh = evalAt(high)
-
-  if (fLow === null || fHigh === null) {
-    // Try wider range
-    low = 0.001
-    high = maxAbs * 10000
-    fLow = evalAt(low)
-    fHigh = evalAt(high)
-    if (fLow === null || fHigh === null) return null
-  }
-
-  const targetDiffLow = fLow - targetOutputValue
-  const targetDiffHigh = fHigh - targetOutputValue
-
-  // Check if root is bracketed
-  if (targetDiffLow * targetDiffHigh > 0) {
-    // Try expanding range
-    for (const factor of [1e6, 1e8, 1e10]) {
-      high = maxAbs * factor
-      fHigh = evalAt(high)
-      if (fHigh !== null) {
-        const diffHigh = fHigh - targetOutputValue
-        if (targetDiffLow * diffHigh <= 0) break
-      }
-    }
-    const finalDiffHigh = fHigh !== null ? fHigh - targetOutputValue : targetDiffHigh
-    if (targetDiffLow * finalDiffHigh > 0) return null
-  }
-
-  // Bisection
-  for (let i = 0; i < maxIter; i++) {
-    const mid = (low + high) / 2
-    const fMid = evalAt(mid)
-    if (fMid === null) {
-      // Narrow from the side that works
-      high = mid
-      continue
-    }
-
-    const diffMid = fMid - targetOutputValue
-
-    if (Math.abs(diffMid) < tolerance) return mid
-
-    const diffLowVal = evalAt(low)
-    if (diffLowVal === null) {
-      low = mid
-      continue
-    }
-    const diffLow2 = diffLowVal - targetOutputValue
-
-    if (diffMid * diffLow2 < 0) {
-      high = mid
-    } else {
-      low = mid
-    }
-  }
-
-  const result = (low + high) / 2
-  return isFinite(result) ? result : null
-}
-
-/**
- * Solve a step bidirectionally:
- * - Forward: all inputs provided → calculate outputs
- * - Reverse: one input missing, output provided → numerical solve for missing input
- * - Partial: some outputs missing, all inputs provided → fill missing outputs
- */
-function solveStep(
-  step: PipelineStep,
-  allValues: Record<string, string>,
-  lastEdited: string | null
-): { values: Record<string, string>; autoCalculated: Record<string, boolean>; error: string | null } {
-  const numericInputDefs = step.inputs.filter(inp => inp.type === 'number')
-  const selectInputDefs = step.inputs.filter(inp => inp.type === 'select')
-  const outputDefs = step.outputs.filter(out => !out.isCompliance)
-
-  // Collect filled numeric values
-  const filledNumeric: Record<string, number> = {}
-  const emptyNumericInputs: string[] = []
-  const emptyNumericOutputs: string[] = []
-
-  for (const inp of numericInputDefs) {
-    const raw = allValues[inp.name]
-    if (raw !== '' && raw !== undefined && raw !== null) {
-      const num = Number(raw)
-      if (!isNaN(num)) filledNumeric[inp.name] = num
-      else emptyNumericInputs.push(inp.name)
-    } else {
-      emptyNumericInputs.push(inp.name)
-    }
-  }
-
-  // Collect select values
-  const selectValues: Record<string, string> = {}
-  for (const inp of selectInputDefs) {
-    const raw = allValues[inp.name]
-    if (raw !== '' && raw !== undefined) selectValues[inp.name] = raw
-  }
-
-  // Collect filled output values
-  const filledOutputs: Record<string, number> = {}
-  for (const out of outputDefs) {
-    const raw = allValues[out.name]
-    if (raw !== '' && raw !== undefined && raw !== null) {
-      const num = Number(raw)
-      if (!isNaN(num)) filledOutputs[out.name] = num
-      else emptyNumericOutputs.push(out.name)
-    } else {
-      emptyNumericOutputs.push(out.name)
-    }
-  }
-
-  const allInputValues: Record<string, number | string> = { ...filledNumeric, ...selectValues }
-  const result: Record<string, string> = { ...allValues }
-  const autoCalc: Record<string, boolean> = {}
-  let error: string | null = null
-
-  // CASE 1: All numeric inputs filled → Forward calculation
-  if (emptyNumericInputs.length === 0) {
-    try {
-      const outputs = step.calculate(allInputValues)
-      for (const [key, val] of Object.entries(outputs)) {
-        if (typeof val === 'number' && isFinite(val)) {
-          // Only overwrite if the output was empty or was auto-calculated
-          const currentVal = allValues[key]
-          if (currentVal === '' || currentVal === undefined || lastEdited !== key) {
-            const outDef = step.outputs.find(o => o.name === key)
-            const precision = outDef?.precision ?? 4
-            const rounded = Number(val.toFixed(precision))
-            result[key] = String(rounded)
-            autoCalc[key] = true
-          }
-        } else if (typeof val === 'boolean') {
-          result[key] = val ? 'PASS' : 'FAIL'
-          autoCalc[key] = true
-        }
-      }
-      return { values: result, autoCalculated: autoCalc, error: null }
-    } catch (err: any) {
-      return { values: result, autoCalculated: autoCalc, error: err.message || 'Calculation error' }
-    }
-  }
-
-  // CASE 2: One numeric input missing, at least one output provided → Reverse solve
-  if (emptyNumericInputs.length === 1 && Object.keys(filledOutputs).length > 0) {
-    const missingInput = emptyNumericInputs[0]
-    // Use the first filled output as target
-    const targetOutputName = Object.keys(filledOutputs)[0]
-    const targetOutputValue = filledOutputs[targetOutputName]
-
-    try {
-      const solvedValue = numericalSolveStep(
-        step,
-        allInputValues,
-        missingInput,
-        targetOutputName,
-        targetOutputValue
-      )
-
-      if (solvedValue !== null && isFinite(solvedValue)) {
-        const inpDef = step.inputs.find(i => i.name === missingInput)
-        const outDef = step.outputs.find(o => o.name === targetOutputName)
-        const precision = inpDef?.type === 'number' ? (outDef?.precision ?? 4) : 4
-        const rounded = Number(solvedValue.toFixed(precision))
-        result[missingInput] = String(rounded)
-        autoCalc[missingInput] = true
-
-        // Now forward-calculate to fill any missing outputs
-        const fullInputs = { ...allInputValues, [missingInput]: solvedValue }
-        try {
-          const outputs = step.calculate(fullInputs)
-          for (const [key, val] of Object.entries(outputs)) {
-            if (typeof val === 'number' && isFinite(val)) {
-              if (key !== targetOutputName || emptyNumericOutputs.includes(key)) {
-                const oDef = step.outputs.find(o => o.name === key)
-                const prec = oDef?.precision ?? 4
-                result[key] = String(Number(val.toFixed(prec)))
-                autoCalc[key] = true
-              }
-            } else if (typeof val === 'boolean') {
-              result[key] = val ? 'PASS' : 'FAIL'
-              autoCalc[key] = true
-            }
-          }
-        } catch { /* partial success */ }
-
-        return { values: result, autoCalculated: autoCalc, error: null }
-      } else {
-        error = `Could not solve for ${missingInput}. Try providing a different combination.`
-      }
-    } catch (err: any) {
-      error = `Solver error for ${missingInput}: ${err.message}`
-    }
-
-    return { values: result, autoCalculated: autoCalc, error }
-  }
-
-  // CASE 3: Multiple missing values → tell user which ones
-  if (emptyNumericInputs.length > 1) {
-    const missingLabels = emptyNumericInputs.map(name => {
-      const inp = step.inputs.find(i => i.name === name)
-      return inp?.label || name
-    })
-    error = `Provide values for: ${missingLabels.join(', ')}`
-  }
-
-  return { values: result, autoCalculated: autoCalc, error }
-}
+import {
+  parseFormula,
+  evaluateFormula,
+  solveForUnknown,
+  type InputConfig,
+  type OutputConfig,
+  type ParsedStepFormula,
+} from '@/lib/formula-solver'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Types
@@ -282,20 +40,272 @@ interface PipelineItem {
   icon: string
 }
 
-interface StepResult {
-  step_number: number
-  step_name: string
-  inputs: Record<string, number | string>
-  outputs: Record<string, number | string | boolean>
-  formula_display?: string[]
-  standard_ref?: string
-  success: boolean
-  error?: string
+interface StepInput {
+  name: string
+  symbol: string
+  unit: string
+  type: string
+  required: boolean
+  default?: number | string
+  min_value?: number
+  max_value?: number
+  help_text?: string
+  options?: { value: string | number; label: string }[]
 }
 
-// Per-step value state: { [stepNumber]: { [varName]: string } }
+interface StepOutput {
+  name: string
+  symbol: string
+  unit: string
+  type: string
+  precision: number
+}
+
+interface PipelineStepData {
+  step_number: number
+  name: string
+  description?: string
+  formula?: string
+  formula_ref?: string
+  standard_ref?: string
+  formula_display?: string[]
+  input_config: StepInput[] | string
+  output_config: StepOutput[] | string
+  calculation_type?: string
+  precision?: number
+}
+
+interface PipelineDetail {
+  id: string
+  pipeline_id: string
+  name: string
+  description: string
+  domain: string
+  difficulty_level: string
+  estimated_time: string
+  icon?: string
+  is_local: boolean
+  steps: PipelineStepData[]
+}
+
+// Runtime step info with parsed formula
+interface ResolvedStep {
+  stepNumber: number
+  name: string
+  description: string
+  formulaDisplay: string[]
+  standardRef: string
+  inputs: StepInput[]
+  outputs: StepOutput[]
+  parsedFormula: ParsedStepFormula | null
+}
+
+// Per-step value state
 type StepValues = Record<number, Record<string, string>>
 type StepAutoCalc = Record<number, Record<string, boolean>>
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Helpers
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function parseJsonConfig<T>(config: T[] | string | undefined | null): T[] {
+  if (!config) return []
+  if (Array.isArray(config)) return config
+  if (typeof config === 'string') {
+    try { return JSON.parse(config) } catch { return [] }
+  }
+  return []
+}
+
+function resolveSteps(rawSteps: PipelineStepData[]): ResolvedStep[] {
+  return rawSteps.map((s, idx) => {
+    const inputs = parseJsonConfig<StepInput>(s.input_config)
+    const outputs = parseJsonConfig<StepOutput>(s.output_config)
+    const formula = s.formula || ''
+    const parsedFormula = formula.trim()
+      ? parseFormula(formula, inputs as InputConfig[], outputs as OutputConfig[])
+      : null
+
+    // Build formula display
+    const formulaDisplay: string[] = []
+    if (s.formula_display && Array.isArray(s.formula_display)) {
+      formulaDisplay.push(...s.formula_display)
+    } else if (formula) {
+      formulaDisplay.push(formula)
+    }
+    if (parsedFormula?.equations) {
+      for (const eq of parsedFormula.equations) {
+        if (!formulaDisplay.includes(eq.originalFormula)) {
+          formulaDisplay.push(eq.originalFormula)
+        }
+      }
+    }
+
+    return {
+      stepNumber: s.step_number || idx + 1,
+      name: s.name || `Step ${idx + 1}`,
+      description: s.description || '',
+      formulaDisplay,
+      standardRef: s.standard_ref || s.formula_ref || '',
+      inputs,
+      outputs,
+      parsedFormula,
+    }
+  })
+}
+
+function formatResult(value: number, precision: number = 4): string {
+  const rounded = Number(value.toFixed(precision))
+  return String(rounded)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Solve Step — Bidirectional
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function solveStep(
+  step: ResolvedStep,
+  allValues: Record<string, string>,
+  _lastEdited: string | null,
+): { values: Record<string, string>; autoCalculated: Record<string, boolean>; error: string | null } {
+  const result: Record<string, string> = { ...allValues }
+  const autoCalc: Record<string, boolean> = {}
+  let error: string | null = null
+
+  // Collect filled numeric inputs
+  const filledNumeric: Record<string, number> = {}
+  const emptyNumericInputs: string[] = []
+
+  for (const inp of step.inputs) {
+    if (inp.type === 'select') continue
+    const raw = allValues[inp.name]
+    if (raw !== '' && raw !== undefined && raw !== null) {
+      const num = Number(raw)
+      if (!isNaN(num) && isFinite(num)) {
+        filledNumeric[inp.name] = num
+      } else {
+        emptyNumericInputs.push(inp.name)
+      }
+    } else {
+      emptyNumericInputs.push(inp.name)
+    }
+  }
+
+  // Collect filled output values
+  const filledOutputs: Record<string, number> = {}
+  const emptyOutputs: string[] = []
+
+  for (const out of step.outputs) {
+    const raw = allValues[out.name]
+    if (raw !== '' && raw !== undefined && raw !== null) {
+      const num = Number(raw)
+      if (!isNaN(num) && isFinite(num)) {
+        filledOutputs[out.name] = num
+      } else {
+        emptyOutputs.push(out.name)
+      }
+    } else {
+      emptyOutputs.push(out.name)
+    }
+  }
+
+  if (!step.parsedFormula || !step.parsedFormula.isComputable) {
+    // Non-computable step — no auto-calculation
+    if (emptyNumericInputs.length > 0) {
+      const labels = emptyNumericInputs.map(n => {
+        const inp = step.inputs.find(i => i.name === n)
+        return inp?.symbol || inp?.name || n
+      })
+      error = `Provide values for: ${labels.join(', ')}`
+    }
+    return { values: result, autoCalculated: autoCalc, error }
+  }
+
+  // CASE 1: All numeric inputs filled → Forward calculation
+  if (emptyNumericInputs.length === 0) {
+    const evalResult = evaluateFormula(step.parsedFormula, filledNumeric)
+    if (evalResult.error) {
+      error = evalResult.error
+    } else {
+      for (const [key, val] of Object.entries(evalResult.values)) {
+        const outDef = step.outputs.find(o => o.name === key)
+        const precision = outDef?.precision ?? 4
+        const numVal = Number(val)
+        if (!isNaN(numVal) && isFinite(numVal)) {
+          result[key] = formatResult(numVal, precision)
+          autoCalc[key] = true
+        }
+      }
+    }
+    return { values: result, autoCalculated: autoCalc, error }
+  }
+
+  // CASE 2: One numeric input missing, at least one output provided → Reverse solve
+  if (emptyNumericInputs.length === 1 && Object.keys(filledOutputs).length > 0) {
+    const missingInput = emptyNumericInputs[0]
+    const targetOutputName = Object.keys(filledOutputs)[0]
+    const targetOutputValue = filledOutputs[targetOutputName]
+
+    const solveResult = solveForUnknown(
+      step.parsedFormula,
+      { ...filledNumeric, ...filledOutputs },
+      missingInput,
+      targetOutputName,
+      targetOutputValue,
+    )
+
+    if (solveResult.error) {
+      error = solveResult.error
+    } else {
+      for (const [key, val] of Object.entries(solveResult.values)) {
+        const numVal = Number(val)
+        if (!isNaN(numVal) && isFinite(numVal)) {
+          const outDef = step.outputs.find(o => o.name === key)
+          const inpDef = step.inputs.find(i => i.name === key)
+          const precision = outDef?.precision ?? inpDef ? 4 : 4
+          result[key] = formatResult(numVal, precision)
+          autoCalc[key] = true
+        }
+      }
+
+      // Now forward-calculate to fill remaining outputs
+      const allInputsFilled: Record<string, number | string> = {}
+      for (const [k, v] of Object.entries(result)) {
+        if (v !== '' && v !== undefined) {
+          const num = Number(v)
+          if (!isNaN(num)) allInputsFilled[k] = num
+          else allInputsFilled[k] = v
+        }
+      }
+
+      const forwardResult = evaluateFormula(step.parsedFormula, allInputsFilled)
+      if (!forwardResult.error) {
+        for (const [key, val] of Object.entries(forwardResult.values)) {
+          const numVal = Number(val)
+          if (!isNaN(numVal) && isFinite(numVal) && (emptyOutputs.includes(key) || !result[key])) {
+            const outDef = step.outputs.find(o => o.name === key)
+            const precision = outDef?.precision ?? 4
+            result[key] = formatResult(numVal, precision)
+            autoCalc[key] = true
+          }
+        }
+      }
+    }
+
+    return { values: result, autoCalculated: autoCalc, error }
+  }
+
+  // CASE 3: Multiple missing values
+  if (emptyNumericInputs.length > 1) {
+    const labels = emptyNumericInputs.map(n => {
+      const inp = step.inputs.find(i => i.name === n)
+      return `${inp?.symbol || n} (${inp?.unit || ''})`
+    })
+    error = `Provide values for: ${labels.join(', ')}`
+  }
+
+  return { values: result, autoCalculated: autoCalc, error }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Component
@@ -306,16 +316,32 @@ export function PipelinesSection() {
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [domainFilter, setDomainFilter] = useState('all')
-  const [selectedPipeline, setSelectedPipeline] = useState<EngineeringPipeline | null>(null)
+
+  // Selected pipeline + resolved steps
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [pipelineDetail, setPipelineDetail] = useState<PipelineDetail | null>(null)
+  const [resolvedSteps, setResolvedSteps] = useState<ResolvedStep[]>([])
+  const [loadingDetail, setLoadingDetail] = useState(false)
+  const [detailError, setDetailError] = useState<string | null>(null)
+
+  // Step navigation
   const [currentStep, setCurrentStep] = useState(0)
+
+  // Per-step value state
   const [stepValues, setStepValues] = useState<StepValues>({})
   const [stepAutoCalc, setStepAutoCalc] = useState<StepAutoCalc>({})
   const [stepErrors, setStepErrors] = useState<Record<number, string | null>>({})
-  const [stepResults, setStepResults] = useState<StepResult[]>([])
   const [lastEdited, setLastEdited] = useState<{ step: number; varName: string } | null>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Fetch pipeline list
+  // Run-all results
+  const [stepResults, setStepResults] = useState<{
+    stepNumber: number
+    success: boolean
+    outputs: Record<string, string>
+  }[]>([])
+
+  // ─── Fetch pipeline list ───────────────────────────────────────────────────
   useEffect(() => {
     fetch('/api/pipelines')
       .then(r => r.json())
@@ -324,44 +350,54 @@ export function PipelinesSection() {
       .finally(() => setLoading(false))
   }, [])
 
-  // Handle pipeline selection
-  const handleSelectPipeline = (p: PipelineItem) => {
-    const local = ENGINEERING_PIPELINES.find(ep => ep.id === p.id)
-    if (local) {
-      setSelectedPipeline(local)
-    } else {
-      setSelectedPipeline({
-        id: p.id,
-        name: p.name,
-        description: p.description || '',
-        domain: p.domain as any,
-        difficulty: (p.difficulty_level as any) || 'intermediate',
-        estimated_time: p.estimated_time || '',
-        icon: p.icon || '📊',
-        steps: [],
+  // ─── Fetch pipeline detail when selected ──────────────────────────────────
+  useEffect(() => {
+    if (!selectedId) return
+
+    setLoadingDetail(true)
+    setDetailError(null)
+
+    fetch(`/api/pipelines/${selectedId}`)
+      .then(r => r.json())
+      .then(d => {
+        if (d.success && d.data) {
+          setPipelineDetail(d.data)
+          const steps = resolveSteps(d.data.steps || [])
+          setResolvedSteps(steps)
+        } else {
+          setDetailError(d.error || 'Pipeline not found')
+          setPipelineDetail(null)
+          setResolvedSteps([])
+        }
       })
-    }
+      .catch(err => {
+        setDetailError('Failed to load pipeline')
+        setPipelineDetail(null)
+        setResolvedSteps([])
+      })
+      .finally(() => setLoadingDetail(false))
+  }, [selectedId])
+
+  // Reset step state when pipeline changes
+  useEffect(() => {
     setCurrentStep(0)
     setStepValues({})
     setStepAutoCalc({})
     setStepErrors({})
     setStepResults([])
     setLastEdited(null)
-  }
+  }, [selectedId])
 
-  // Initialize defaults for a step when it's first viewed
+  // ─── Get current step values (with defaults) ──────────────────────────────
   const getStepValues = useCallback((stepIdx: number): Record<string, string> => {
-    if (!selectedPipeline) return {}
-    const step = selectedPipeline.steps[stepIdx]
+    if (stepValues[stepIdx]) return stepValues[stepIdx]
+    const step = resolvedSteps[stepIdx]
     if (!step) return {}
 
-    if (stepValues[stepIdx]) return stepValues[stepIdx]
-
-    // Initialize with defaults
     const defaults: Record<string, string> = {}
     for (const inp of step.inputs) {
-      if (inp.type === 'select') {
-        defaults[inp.name] = String(inp.default ?? inp.options?.[0]?.value ?? '')
+      if (inp.type === 'select' && inp.options && inp.options.length > 0) {
+        defaults[inp.name] = String(inp.default ?? inp.options[0].value ?? '')
       } else {
         defaults[inp.name] = inp.default !== undefined ? String(inp.default) : ''
       }
@@ -370,12 +406,11 @@ export function PipelinesSection() {
       defaults[out.name] = ''
     }
     return defaults
-  }, [selectedPipeline, stepValues])
+  }, [resolvedSteps, stepValues])
 
-  // Auto-calculate with debounce
+  // ─── Auto-calculate with debounce ─────────────────────────────────────────
   const triggerAutoCalc = useCallback((stepIdx: number, values: Record<string, string>, editedVar: string) => {
-    if (!selectedPipeline) return
-    const step = selectedPipeline.steps[stepIdx]
+    const step = resolvedSteps[stepIdx]
     if (!step) return
 
     if (debounceRef.current) clearTimeout(debounceRef.current)
@@ -383,32 +418,20 @@ export function PipelinesSection() {
     debounceRef.current = setTimeout(() => {
       const { values: newValues, autoCalculated, error } = solveStep(step, values, editedVar)
 
-      setStepValues(prev => ({
-        ...prev,
-        [stepIdx]: newValues,
-      }))
-      setStepAutoCalc(prev => ({
-        ...prev,
-        [stepIdx]: autoCalculated,
-      }))
-      setStepErrors(prev => ({
-        ...prev,
-        [stepIdx]: error,
-      }))
+      setStepValues(prev => ({ ...prev, [stepIdx]: newValues }))
+      setStepAutoCalc(prev => ({ ...prev, [stepIdx]: autoCalculated }))
+      setStepErrors(prev => ({ ...prev, [stepIdx]: error }))
 
-      // Chain propagation: if outputs changed, push to subsequent steps
-      if (selectedPipeline) {
-        propagateOutputs(stepIdx, newValues, selectedPipeline)
-      }
+      // Propagate outputs to subsequent steps
+      propagateOutputs(stepIdx, newValues)
     }, 300)
-  }, [selectedPipeline])
+  }, [resolvedSteps])
 
-  // Propagate outputs to subsequent steps
-  const propagateOutputs = useCallback((fromStepIdx: number, values: Record<string, string>, pipeline: EngineeringPipeline) => {
-    const fromStep = pipeline.steps[fromStepIdx]
+  // ─── Propagate outputs to subsequent steps ────────────────────────────────
+  const propagateOutputs = useCallback((fromStepIdx: number, values: Record<string, string>) => {
+    const fromStep = resolvedSteps[fromStepIdx]
     if (!fromStep) return
 
-    // Get the calculated outputs
     const outputNames = fromStep.outputs.map(o => o.name)
     const propagatedValues: Record<string, string> = {}
     for (const name of outputNames) {
@@ -419,19 +442,16 @@ export function PipelinesSection() {
 
     if (Object.keys(propagatedValues).length === 0) return
 
-    // Push to subsequent steps
     setStepValues(prev => {
       const updated = { ...prev }
-      for (let i = fromStepIdx + 1; i < pipeline.steps.length; i++) {
-        const nextStep = pipeline.steps[i]
+      for (let i = fromStepIdx + 1; i < resolvedSteps.length; i++) {
+        const nextStep = resolvedSteps[i]
         const nextValues = { ...(updated[i] || {}) }
         let changed = false
 
         for (const inp of nextStep.inputs) {
-          // Check fromPreviousStep or name match
-          const prevStepKey = inp.fromPreviousStep || inp.name
-          if (propagatedValues[prevStepKey] !== undefined && nextValues[inp.name] === '') {
-            nextValues[inp.name] = propagatedValues[prevStepKey]
+          if (propagatedValues[inp.name] !== undefined && (nextValues[inp.name] === '' || nextValues[inp.name] === undefined)) {
+            nextValues[inp.name] = propagatedValues[inp.name]
             changed = true
           }
         }
@@ -440,9 +460,9 @@ export function PipelinesSection() {
       }
       return updated
     })
-  }, [])
+  }, [resolvedSteps])
 
-  // Handle value change for a variable in a step
+  // ─── Handle value change ──────────────────────────────────────────────────
   const handleValueChange = (stepIdx: number, varName: string, value: string) => {
     const currentValues = getStepValues(stepIdx)
     const newValues = { ...currentValues, [varName]: value }
@@ -460,167 +480,92 @@ export function PipelinesSection() {
     triggerAutoCalc(stepIdx, newValues, varName)
   }
 
-  // Explicit calculate step (forward)
+  // ─── Explicit calculate step ──────────────────────────────────────────────
   const handleCalculateStep = () => {
-    if (!selectedPipeline) return
-    const step = selectedPipeline.steps[currentStep]
+    if (!resolvedSteps.length) return
+    const step = resolvedSteps[currentStep]
     if (!step) return
 
     const values = getStepValues(currentStep)
+    const { values: newValues, autoCalculated, error } = solveStep(step, values, null)
 
-    // Build inputs from values
-    const filledInputs: Record<string, number | string> = {}
-    for (const inp of step.inputs) {
-      const val = values[inp.name]
-      if (val !== '' && val !== undefined) {
-        if (inp.type === 'number') {
-          filledInputs[inp.name] = Number(val)
-        } else {
-          filledInputs[inp.name] = val
-        }
-      } else if (inp.default !== undefined) {
-        filledInputs[inp.name] = inp.default
-      }
-    }
+    setStepValues(prev => ({ ...prev, [currentStep]: newValues }))
+    setStepAutoCalc(prev => ({ ...prev, [currentStep]: autoCalculated }))
+    setStepErrors(prev => ({ ...prev, [currentStep]: error }))
 
-    try {
-      const outputs = step.calculate(filledInputs)
-      const result: StepResult = {
-        step_number: step.stepNumber,
-        step_name: step.name,
-        inputs: filledInputs,
-        outputs,
-        formula_display: step.formula_display,
-        standard_ref: step.standard_ref,
-        success: true,
-      }
-
-      // Update step values with calculated outputs
-      const newValues = { ...values }
-      const autoCalc: Record<string, boolean> = {}
-      for (const [key, val] of Object.entries(outputs)) {
-        if (typeof val === 'number') {
-          const outDef = step.outputs.find(o => o.name === key)
-          const precision = outDef?.precision ?? 4
-          newValues[key] = String(Number(val.toFixed(precision)))
-          autoCalc[key] = true
-        } else if (typeof val === 'boolean') {
-          newValues[key] = val ? 'PASS' : 'FAIL'
-          autoCalc[key] = true
+    if (!error) {
+      const outputs: Record<string, string> = {}
+      for (const out of step.outputs) {
+        if (newValues[out.name] !== '' && newValues[out.name] !== undefined) {
+          outputs[out.name] = newValues[out.name]
         }
       }
+      setStepResults(prev => [
+        ...prev.filter(r => r.stepNumber !== step.stepNumber),
+        { stepNumber: step.stepNumber, success: true, outputs }
+      ])
 
-      setStepValues(prev => ({ ...prev, [currentStep]: newValues }))
-      setStepAutoCalc(prev => ({ ...prev, [currentStep]: autoCalc }))
-      setStepErrors(prev => ({ ...prev, [currentStep]: null }))
-      setStepResults(prev => [...prev.filter(r => r.step_number !== step.stepNumber), result])
-
-      // Propagate
-      propagateOutputs(currentStep, newValues, selectedPipeline)
+      propagateOutputs(currentStep, newValues)
 
       // Auto-advance
-      if (currentStep < selectedPipeline.steps.length - 1) {
+      if (currentStep < resolvedSteps.length - 1) {
         setCurrentStep(currentStep + 1)
       }
-    } catch (err: any) {
-      const result: StepResult = {
-        step_number: step.stepNumber,
-        step_name: step.name,
-        inputs: filledInputs,
-        outputs: {},
-        success: false,
-        error: err.message,
-      }
-      setStepResults(prev => [...prev.filter(r => r.step_number !== step.stepNumber), result])
-      setStepErrors(prev => ({ ...prev, [currentStep]: err.message }))
     }
   }
 
-  // Run all steps
+  // ─── Run all steps ────────────────────────────────────────────────────────
   const handleRunAll = () => {
-    if (!selectedPipeline) return
-    setStepResults([])
+    if (!resolvedSteps.length) return
 
-    const allInputs: Record<string, number | string> = {}
-    const allResults: StepResult[] = []
+    const allResults: { stepNumber: number; success: boolean; outputs: Record<string, string> }[] = []
     const newStepValues: StepValues = { ...stepValues }
     const newAutoCalc: StepAutoCalc = { ...stepAutoCalc }
 
-    for (let i = 0; i < selectedPipeline.steps.length; i++) {
-      const step = selectedPipeline.steps[i]
+    for (let i = 0; i < resolvedSteps.length; i++) {
+      const step = resolvedSteps[i]
       const values = getStepValues(i)
 
-      const filledInputs: Record<string, number | string> = {}
-      for (const inp of step.inputs) {
-        const val = values[inp.name]
-        const prevStepKey = inp.fromPreviousStep || inp.name
-        if (val !== '' && val !== undefined) {
-          filledInputs[inp.name] = inp.type === 'number' ? Number(val) : val
-        } else if (allInputs[inp.name] !== undefined) {
-          filledInputs[inp.name] = allInputs[inp.name]
-        } else if (allInputs[prevStepKey] !== undefined) {
-          filledInputs[inp.name] = allInputs[prevStepKey]
-        } else if (inp.default !== undefined) {
-          filledInputs[inp.name] = inp.default
-        }
-      }
-
-      try {
-        const outputs = step.calculate(filledInputs)
-        allResults.push({
-          step_number: step.stepNumber,
-          step_name: step.name,
-          inputs: filledInputs,
-          outputs,
-          formula_display: step.formula_display,
-          standard_ref: step.standard_ref,
-          success: true,
-        })
-        Object.assign(allInputs, filledInputs, outputs)
-
-        // Update step values
-        const stepVals = { ...values }
-        const stepAuto: Record<string, boolean> = {}
+      // Also try to propagate from previous results
+      const enrichedValues = { ...values }
+      if (i > 0) {
+        const prevOutputs = allResults[i - 1]?.outputs || {}
         for (const inp of step.inputs) {
-          if (filledInputs[inp.name] !== undefined) {
-            stepVals[inp.name] = String(filledInputs[inp.name])
+          if ((enrichedValues[inp.name] === '' || enrichedValues[inp.name] === undefined) && prevOutputs[inp.name]) {
+            enrichedValues[inp.name] = prevOutputs[inp.name]
           }
         }
-        for (const [key, val] of Object.entries(outputs)) {
-          if (typeof val === 'number') {
-            const outDef = step.outputs.find(o => o.name === key)
-            const precision = outDef?.precision ?? 4
-            stepVals[key] = String(Number(val.toFixed(precision)))
-            stepAuto[key] = true
-          } else if (typeof val === 'boolean') {
-            stepVals[key] = val ? 'PASS' : 'FAIL'
-            stepAuto[key] = true
-          }
-        }
-        newStepValues[i] = stepVals
-        newAutoCalc[i] = stepAuto
-      } catch (err: any) {
-        allResults.push({
-          step_number: step.stepNumber,
-          step_name: step.name,
-          inputs: filledInputs,
-          outputs: {},
-          success: false,
-          error: err.message,
-        })
-        break
       }
+
+      const { values: newValues, autoCalculated, error } = solveStep(step, enrichedValues, null)
+
+      newStepValues[i] = newValues
+      newAutoCalc[i] = autoCalculated
+
+      const outputs: Record<string, string> = {}
+      for (const out of step.outputs) {
+        if (newValues[out.name] !== '' && newValues[out.name] !== undefined) {
+          outputs[out.name] = newValues[out.name]
+        }
+      }
+
+      allResults.push({
+        stepNumber: step.stepNumber,
+        success: !error,
+        outputs,
+      })
+
+      if (error) break
     }
 
     setStepResults(allResults)
     setStepValues(newStepValues)
     setStepAutoCalc(newAutoCalc)
-    setCurrentStep(selectedPipeline.steps.length - 1)
+    setCurrentStep(resolvedSteps.length - 1)
   }
 
-  // Reset step
+  // ─── Reset step ───────────────────────────────────────────────────────────
   const handleResetStep = () => {
-    if (!selectedPipeline) return
     setStepValues(prev => {
       const updated = { ...prev }
       delete updated[currentStep]
@@ -634,7 +579,7 @@ export function PipelinesSection() {
     setStepErrors(prev => ({ ...prev, [currentStep]: null }))
   }
 
-  // Reset all
+  // ─── Reset all ────────────────────────────────────────────────────────────
   const handleResetAll = () => {
     setStepValues({})
     setStepAutoCalc({})
@@ -644,14 +589,24 @@ export function PipelinesSection() {
     setLastEdited(null)
   }
 
-  const filteredPipelines = pipelines.filter(p => {
-    if (domainFilter !== 'all' && p.domain !== domainFilter) return false
-    if (search && !p.name.toLowerCase().includes(search.toLowerCase()) && !(p.description || '').toLowerCase().includes(search.toLowerCase())) return false
-    return true
-  })
+  // ─── Filtered pipelines ───────────────────────────────────────────────────
+  const filteredPipelines = useMemo(() =>
+    pipelines.filter(p => {
+      if (domainFilter !== 'all' && p.domain !== domainFilter) return false
+      if (search && !p.name.toLowerCase().includes(search.toLowerCase()) && !(p.description || '').toLowerCase().includes(search.toLowerCase())) return false
+      return true
+    }),
+    [pipelines, domainFilter, search]
+  )
 
-  // Render a single step's variable editor
-  const renderStepEditor = (step: PipelineStep, stepIdx: number) => {
+  // ─── Domain list ──────────────────────────────────────────────────────────
+  const domains = useMemo(() => {
+    const set = new Set(pipelines.map(p => p.domain).filter(Boolean))
+    return Array.from(set).sort()
+  }, [pipelines])
+
+  // ─── Render a single step's variable editor ──────────────────────────────
+  const renderStepEditor = (step: ResolvedStep, stepIdx: number) => {
     const values = getStepValues(stepIdx)
     const autoCalc = stepAutoCalc[stepIdx] || {}
     const error = stepErrors[stepIdx]
@@ -660,19 +615,31 @@ export function PipelinesSection() {
       <div className="space-y-4">
         {/* Step Header */}
         <div>
-          <h3 className="font-semibold text-lg">{step.name}</h3>
-          <p className="text-sm text-muted-foreground">{step.description}</p>
-          {step.standard_ref && (
-            <Badge variant="outline" className="mt-1 text-[10px]">{step.standard_ref}</Badge>
+          <h3 className="font-semibold text-lg">Step {step.stepNumber}: {step.name}</h3>
+          {step.description && (
+            <p className="text-sm text-muted-foreground mt-1">{step.description}</p>
+          )}
+          {step.standardRef && (
+            <Badge variant="outline" className="mt-1.5 text-[10px]">{step.standardRef}</Badge>
           )}
         </div>
 
         {/* Formula Display */}
-        {step.formula_display && step.formula_display.length > 0 && (
-          <div className="bg-muted p-3 rounded-lg font-mono text-xs space-y-1">
-            {step.formula_display.map((f, i) => (
-              <div key={i}>{f}</div>
+        {step.formulaDisplay.length > 0 && (
+          <div className="bg-muted/80 p-3 rounded-lg font-mono text-xs space-y-1 border">
+            {step.formulaDisplay.map((f, i) => (
+              <div key={i} className="text-foreground/90">{f}</div>
             ))}
+          </div>
+        )}
+
+        {/* Computable status */}
+        {step.parsedFormula && !step.parsedFormula.isComputable && step.formulaDisplay.length > 0 && (
+          <div className="flex items-center gap-2 p-2.5 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-lg">
+            <Info className="h-4 w-4 text-amber-600 shrink-0" />
+            <p className="text-xs text-amber-700 dark:text-amber-300">
+              This step uses a descriptive formula. Enter input values and the output will be calculated where possible.
+            </p>
           </div>
         )}
 
@@ -684,30 +651,30 @@ export function PipelinesSection() {
             <Variable className="h-4 w-4 text-emerald-600" />
             Input Parameters
           </h4>
-          <div className="grid gap-3 md:grid-cols-2">
+          <div className="grid gap-3 sm:grid-cols-2">
             {step.inputs.map(inp => {
               const isAuto = autoCalc[inp.name]
-              const prevStepKey = inp.fromPreviousStep || inp.name
-              const isPropagated = inp.fromPreviousStep && values[inp.name] !== '' && values[inp.name] !== undefined
+              const isPropagated = stepIdx > 0 && values[inp.name] !== '' && values[inp.name] !== undefined && !isAuto
 
               return (
                 <div key={inp.name} className="space-y-1">
                   <label className="text-xs font-medium flex items-center gap-1 flex-wrap">
-                    <span>{inp.label}</span>
-                    {inp.unit && <span className="text-muted-foreground">({inp.unit})</span>}
+                    <span>{inp.symbol || inp.name}</span>
+                    {inp.symbol !== inp.name && <span className="text-muted-foreground">({inp.name})</span>}
+                    {inp.unit && <span className="text-muted-foreground">[{inp.unit}]</span>}
                     {isAuto && (
                       <Badge className="text-[8px] h-4 bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400 border-0 px-1">
                         auto
                       </Badge>
                     )}
-                    {isPropagated && !isAuto && (
+                    {isPropagated && (
                       <Badge className="text-[8px] h-4 bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-400 border-0 px-1">
                         <Link2 className="h-2.5 w-2.5 mr-0.5" />
                         linked
                       </Badge>
                     )}
                   </label>
-                  {inp.type === 'select' && inp.options ? (
+                  {inp.type === 'select' && inp.options && inp.options.length > 0 ? (
                     <Select
                       value={String(values[inp.name] ?? inp.default ?? '')}
                       onValueChange={v => handleValueChange(stepIdx, inp.name, v)}
@@ -725,8 +692,13 @@ export function PipelinesSection() {
                         type="number"
                         value={values[inp.name] ?? ''}
                         onChange={e => handleValueChange(stepIdx, inp.name, e.target.value)}
-                        placeholder={`Enter ${inp.label}`}
-                        className={`pr-12 ${isAuto ? 'border-emerald-400 bg-emerald-50/60 dark:border-emerald-600 dark:bg-emerald-950/30' : ''}`}
+                        placeholder={`Enter ${inp.symbol || inp.name}`}
+                        className={`pr-12 ${isAuto
+                          ? 'border-emerald-400 bg-emerald-50/60 dark:border-emerald-600 dark:bg-emerald-950/30'
+                          : isPropagated
+                            ? 'border-blue-300 bg-blue-50/30 dark:border-blue-700 dark:bg-blue-950/20'
+                            : ''
+                        }`}
                         step="any"
                       />
                       {inp.unit && (
@@ -736,7 +708,7 @@ export function PipelinesSection() {
                       )}
                     </div>
                   )}
-                  {inp.help && <p className="text-[10px] text-muted-foreground">{inp.help}</p>}
+                  {inp.help_text && <p className="text-[10px] text-muted-foreground">{inp.help_text}</p>}
                 </div>
               )
             })}
@@ -752,44 +724,17 @@ export function PipelinesSection() {
             Output Results
             <span className="text-[10px] text-muted-foreground font-normal">(editable for reverse calculation)</span>
           </h4>
-          <div className="grid gap-3 md:grid-cols-2">
+          <div className="grid gap-3 sm:grid-cols-2">
             {step.outputs.map(out => {
               const isAuto = autoCalc[out.name]
-              const isCompliance = out.isCompliance
               const rawVal = values[out.name] ?? ''
-              const displayVal = isCompliance && rawVal ? rawVal : rawVal
-
-              if (isCompliance && rawVal) {
-                // Compliance badge
-                const isPass = rawVal === 'PASS' || rawVal === 'true'
-                return (
-                  <div key={out.name} className="space-y-1">
-                    <label className="text-xs font-medium flex items-center gap-1">
-                      <span>{out.label}</span>
-                    </label>
-                    <div className={`flex items-center gap-2 p-2 rounded-md border ${
-                      isPass
-                        ? 'border-emerald-300 bg-emerald-50 dark:border-emerald-700 dark:bg-emerald-950/30'
-                        : 'border-red-300 bg-red-50 dark:border-red-700 dark:bg-red-950/30'
-                    }`}>
-                      {isPass ? (
-                        <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-                      ) : (
-                        <XCircle className="h-4 w-4 text-red-600" />
-                      )}
-                      <span className={`text-sm font-semibold ${isPass ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-700 dark:text-red-400'}`}>
-                        {isPass ? 'PASS' : 'FAIL'}
-                      </span>
-                    </div>
-                  </div>
-                )
-              }
 
               return (
                 <div key={out.name} className="space-y-1">
                   <label className="text-xs font-medium flex items-center gap-1 flex-wrap">
-                    <span>{out.label || out.name}</span>
-                    {out.unit && <span className="text-muted-foreground">({out.unit})</span>}
+                    <span>{out.symbol || out.name}</span>
+                    {out.symbol !== out.name && <span className="text-muted-foreground">({out.name})</span>}
+                    {out.unit && <span className="text-muted-foreground">[{out.unit}]</span>}
                     {isAuto && (
                       <Badge className="text-[8px] h-4 bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400 border-0 px-1">
                         calculated
@@ -799,9 +744,9 @@ export function PipelinesSection() {
                   <div className="relative">
                     <Input
                       type="number"
-                      value={displayVal}
+                      value={rawVal}
                       onChange={e => handleValueChange(stepIdx, out.name, e.target.value)}
-                      placeholder={isAuto ? 'Auto-calculated' : `Enter ${out.label || out.name}`}
+                      placeholder={isAuto ? 'Auto-calculated' : `Enter ${out.symbol || out.name}`}
                       className={`pr-12 ${
                         isAuto
                           ? 'border-emerald-400 bg-emerald-50/60 dark:border-emerald-600 dark:bg-emerald-950/30 font-semibold'
@@ -831,7 +776,7 @@ export function PipelinesSection() {
 
         {/* Action Buttons */}
         <div className="flex gap-2 pt-2">
-          <Button onClick={handleCalculateStep} className="flex-1 bg-emerald-600 hover:bg-emerald-700">
+          <Button onClick={handleCalculateStep} className="flex-1 bg-emerald-600 hover:bg-emerald-700" disabled={!step.parsedFormula?.isComputable && step.inputs.length === 0}>
             <Play className="h-4 w-4 mr-2" />
             Calculate Step {step.stepNumber}
           </Button>
@@ -843,6 +788,7 @@ export function PipelinesSection() {
     )
   }
 
+  // ─── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="space-y-6">
       <div>
@@ -861,36 +807,38 @@ export function PipelinesSection() {
             <SelectTrigger><SelectValue placeholder="Filter by domain" /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Domains</SelectItem>
-              <SelectItem value="electrical">Electrical</SelectItem>
-              <SelectItem value="mechanical">Mechanical</SelectItem>
-              <SelectItem value="civil">Civil</SelectItem>
-              <SelectItem value="hvac">HVAC</SelectItem>
-              <SelectItem value="hydraulics">Hydraulics</SelectItem>
+              {domains.map(d => (
+                <SelectItem key={d} value={d} className="capitalize">{d}</SelectItem>
+              ))}
             </SelectContent>
           </Select>
 
           <ScrollArea className="h-[calc(100vh-280px)]">
             <div className="space-y-2">
               {loading ? (
-                <p className="text-sm text-muted-foreground p-4">Loading pipelines...</p>
+                <div className="flex items-center justify-center p-8">
+                  <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                  <span className="ml-2 text-sm text-muted-foreground">Loading...</span>
+                </div>
               ) : filteredPipelines.length === 0 ? (
                 <p className="text-sm text-muted-foreground p-4">No pipelines found</p>
               ) : (
                 filteredPipelines.map(p => (
                   <button
                     key={p.id}
-                    onClick={() => handleSelectPipeline(p)}
+                    onClick={() => setSelectedId(p.id)}
                     className={`w-full text-left p-3 rounded-lg border transition-colors ${
-                      selectedPipeline?.id === p.id ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-900/20' : 'hover:bg-muted/50'
+                      selectedId === p.id ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-900/20' : 'hover:bg-muted/50'
                     }`}
                   >
                     <div className="flex items-center gap-2">
-                      <span className="text-lg">{p.icon}</span>
+                      <span className="text-lg">{p.icon || '📊'}</span>
                       <div className="flex-1 min-w-0">
                         <div className="font-medium text-sm truncate">{p.name}</div>
-                        <div className="flex gap-1 mt-1">
+                        <div className="flex gap-1 mt-1 flex-wrap">
                           <Badge variant="secondary" className="text-[10px] capitalize">{p.domain}</Badge>
                           <Badge variant="outline" className="text-[10px]">{p.step_count} steps</Badge>
+                          {p.is_local && <Badge className="text-[10px] bg-emerald-100 text-emerald-700 border-0">local</Badge>}
                         </div>
                       </div>
                     </div>
@@ -903,23 +851,38 @@ export function PipelinesSection() {
 
         {/* Pipeline Detail */}
         <div className="flex-1 min-w-0">
-          {selectedPipeline ? (
+          {loadingDetail ? (
+            <Card>
+              <CardContent className="p-8 flex items-center justify-center">
+                <Loader2 className="h-6 w-6 animate-spin text-emerald-600" />
+                <span className="ml-3 text-muted-foreground">Loading pipeline details...</span>
+              </CardContent>
+            </Card>
+          ) : detailError ? (
+            <Card>
+              <CardContent className="p-8 text-center">
+                <AlertTriangle className="h-8 w-8 mx-auto text-amber-500" />
+                <p className="mt-2 text-muted-foreground">{detailError}</p>
+                <Button variant="outline" className="mt-4" onClick={() => setSelectedId(null)}>Go Back</Button>
+              </CardContent>
+            </Card>
+          ) : selectedId && pipelineDetail ? (
             <div className="space-y-4">
               {/* Pipeline Header */}
               <Card>
                 <CardHeader>
                   <div className="flex items-center gap-2">
-                    <span className="text-2xl">{selectedPipeline.icon}</span>
+                    <span className="text-2xl">{pipelineDetail.icon || '📊'}</span>
                     <div>
-                      <CardTitle>{selectedPipeline.name}</CardTitle>
-                      <CardDescription>{selectedPipeline.description}</CardDescription>
+                      <CardTitle>{pipelineDetail.name}</CardTitle>
+                      <CardDescription>{pipelineDetail.description}</CardDescription>
                     </div>
                   </div>
                   <div className="flex gap-2 mt-2 flex-wrap">
-                    <Badge className="capitalize bg-emerald-600">{selectedPipeline.domain}</Badge>
-                    <Badge variant="outline">{selectedPipeline.difficulty}</Badge>
-                    <Badge variant="outline">{selectedPipeline.estimated_time}</Badge>
-                    <Badge variant="outline">{selectedPipeline.steps.length} steps</Badge>
+                    <Badge className="capitalize bg-emerald-600">{pipelineDetail.domain}</Badge>
+                    {pipelineDetail.difficulty_level && <Badge variant="outline">{pipelineDetail.difficulty_level}</Badge>}
+                    {pipelineDetail.estimated_time && <Badge variant="outline">{pipelineDetail.estimated_time}</Badge>}
+                    <Badge variant="outline">{resolvedSteps.length} steps</Badge>
                     <TooltipProvider>
                       <Tooltip>
                         <TooltipTrigger asChild>
@@ -938,158 +901,129 @@ export function PipelinesSection() {
               </Card>
 
               {/* Steps Navigation + Editor */}
-              {selectedPipeline.steps.length > 0 && (
-                <Card>
-                  <CardHeader className="pb-3">
-                    {/* Step Navigation */}
-                    <div className="flex items-center justify-between">
-                      <Button variant="outline" size="sm" onClick={() => setCurrentStep(Math.max(0, currentStep - 1))} disabled={currentStep === 0}>
-                        <ChevronLeft className="h-4 w-4 mr-1" /> Previous
-                      </Button>
-                      <span className="text-sm font-medium">
-                        Step {currentStep + 1} of {selectedPipeline.steps.length}
-                      </span>
-                      <Button variant="outline" size="sm" onClick={() => setCurrentStep(Math.min(selectedPipeline.steps.length - 1, currentStep + 1))} disabled={currentStep >= selectedPipeline.steps.length - 1}>
-                        Next <ChevronRight className="h-4 w-4 ml-1" />
-                      </Button>
-                    </div>
+              {resolvedSteps.length > 0 ? (
+                <>
+                  <Card>
+                    <CardHeader className="pb-3">
+                      {/* Step Navigation */}
+                      <div className="flex items-center justify-between">
+                        <Button variant="outline" size="sm" onClick={() => setCurrentStep(Math.max(0, currentStep - 1))} disabled={currentStep === 0}>
+                          <ChevronLeft className="h-4 w-4 mr-1" /> Previous
+                        </Button>
+                        <span className="text-sm font-medium">
+                          Step {currentStep + 1} of {resolvedSteps.length}
+                        </span>
+                        <Button variant="outline" size="sm" onClick={() => setCurrentStep(Math.min(resolvedSteps.length - 1, currentStep + 1))} disabled={currentStep >= resolvedSteps.length - 1}>
+                          Next <ChevronRight className="h-4 w-4 ml-1" />
+                        </Button>
+                      </div>
 
-                    {/* Step Progress Bar */}
-                    <Progress value={((currentStep + 1) / selectedPipeline.steps.length) * 100} className="h-1.5" />
+                      {/* Step Progress Bar */}
+                      <Progress value={((currentStep + 1) / resolvedSteps.length) * 100} className="h-1.5" />
 
-                    {/* Step Pills */}
-                    <div className="flex gap-1.5 mt-1 overflow-x-auto pb-1">
-                      {selectedPipeline.steps.map((s, idx) => {
-                        const hasValues = stepValues[idx] && Object.values(stepValues[idx]).some(v => v !== '' && v !== undefined)
-                        const hasResult = stepResults.some(r => r.step_number === s.stepNumber && r.success)
-                        return (
-                          <button
-                            key={s.stepNumber}
-                            onClick={() => setCurrentStep(idx)}
-                            className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${
-                              idx === currentStep
-                                ? 'border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
-                                : hasResult
-                                  ? 'border-emerald-300 bg-emerald-50/50 text-emerald-600 dark:border-emerald-700 dark:bg-emerald-950/20'
-                                  : hasValues
-                                    ? 'border-amber-300 bg-amber-50/50 text-amber-600 dark:border-amber-700 dark:bg-amber-950/20'
-                                    : 'border-border hover:bg-muted/50 text-muted-foreground'
-                            }`}
-                          >
-                            <span className="mr-1">{s.stepNumber}.</span>
-                            {s.name.length > 18 ? s.name.substring(0, 18) + '...' : s.name}
-                            {hasResult && <CheckCircle2 className="h-3 w-3 ml-1 inline" />}
-                          </button>
-                        )
-                      })}
-                    </div>
-                  </CardHeader>
+                      {/* Step Pills */}
+                      <div className="flex gap-1.5 mt-1 overflow-x-auto pb-1">
+                        {resolvedSteps.map((s, idx) => {
+                          const hasValues = stepValues[idx] && Object.values(stepValues[idx]).some(v => v !== '' && v !== undefined)
+                          const hasResult = stepResults.some(r => r.stepNumber === s.stepNumber && r.success)
+                          return (
+                            <button
+                              key={s.stepNumber}
+                              onClick={() => setCurrentStep(idx)}
+                              className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${
+                                idx === currentStep
+                                  ? 'border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
+                                  : hasResult
+                                    ? 'border-emerald-300 bg-emerald-50/50 text-emerald-600 dark:border-emerald-700 dark:bg-emerald-950/20'
+                                    : hasValues
+                                      ? 'border-amber-300 bg-amber-50/50 text-amber-600 dark:border-amber-700 dark:bg-amber-950/20'
+                                      : 'border-border hover:bg-muted/50 text-muted-foreground'
+                              }`}
+                            >
+                              <span className="mr-1">{s.stepNumber}.</span>
+                              {s.name.length > 20 ? s.name.substring(0, 20) + '...' : s.name}
+                              {hasResult && <CheckCircle2 className="h-3 w-3 ml-1 inline" />}
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </CardHeader>
 
-                  <CardContent>
-                    {renderStepEditor(selectedPipeline.steps[currentStep], currentStep)}
-                  </CardContent>
-                </Card>
-              )}
+                    <CardContent>
+                      {renderStepEditor(resolvedSteps[currentStep], currentStep)}
+                    </CardContent>
+                  </Card>
 
-              {/* Run All & Reset */}
-              {selectedPipeline.steps.length > 0 && (
-                <div className="flex gap-2">
-                  <Button onClick={handleRunAll} variant="outline" className="flex-1">
-                    <GitBranch className="h-4 w-4 mr-2" />
-                    Run All Steps
-                  </Button>
-                  <Button onClick={handleResetAll} variant="outline">
-                    <RotateCcw className="h-4 w-4 mr-2" />
-                    Reset All
-                  </Button>
-                </div>
-              )}
+                  {/* Run All & Reset */}
+                  <div className="flex gap-2">
+                    <Button onClick={handleRunAll} variant="outline" className="flex-1">
+                      <GitBranch className="h-4 w-4 mr-2" />
+                      Run All Steps
+                    </Button>
+                    <Button onClick={handleResetAll} variant="outline">
+                      <RotateCcw className="h-4 w-4 mr-2" />
+                      Reset All
+                    </Button>
+                  </div>
 
-              {/* Results Summary */}
-              {stepResults.length > 0 && (
-                <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-base flex items-center gap-2">
-                      <FileText className="h-5 w-5" />
-                      Calculation Results
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-3">
-                    {stepResults.map(result => (
-                      <div key={result.step_number} className={`p-3 rounded-lg border ${
-                        result.success
-                          ? 'border-emerald-200 dark:border-emerald-800'
-                          : 'border-red-200 dark:border-red-800'
-                      }`}>
-                        <div className="flex items-center gap-2 mb-2">
-                          {result.success ? (
-                            <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-                          ) : (
-                            <XCircle className="h-4 w-4 text-red-600" />
-                          )}
-                          <span className="font-medium text-sm">Step {result.step_number}: {result.step_name}</span>
-                        </div>
-                        {result.success ? (
-                          <div className="grid gap-1 md:grid-cols-2">
-                            {Object.entries(result.outputs).map(([key, val]) => (
-                              <div key={key} className="flex justify-between text-xs bg-muted p-1.5 rounded">
-                                <span>{key}</span>
-                                <span className="font-mono">
-                                  {typeof val === 'boolean' ? (val ? '✅ PASS' : '❌ FAIL') : String(val)}
-                                </span>
+                  {/* Results Summary */}
+                  {stepResults.length > 0 && (
+                    <Card>
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-base flex items-center gap-2">
+                          <FileText className="h-4 w-4" />
+                          Pipeline Results Summary
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="space-y-3 max-h-72 overflow-y-auto">
+                          {stepResults.map(r => {
+                            const step = resolvedSteps.find(s => s.stepNumber === r.stepNumber)
+                            return (
+                              <div key={r.stepNumber} className="flex items-start gap-3 text-sm">
+                                <div className={`mt-0.5 ${r.success ? 'text-emerald-600' : 'text-red-600'}`}>
+                                  {r.success ? <CheckCircle2 className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <span className="font-medium">Step {r.stepNumber}: {step?.name || 'Unknown'}</span>
+                                  <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1">
+                                    {Object.entries(r.outputs).map(([key, val]) => {
+                                      const outDef = step?.outputs.find(o => o.name === key)
+                                      return (
+                                        <span key={key} className="text-xs text-muted-foreground">
+                                          {outDef?.symbol || key}: <span className="font-medium text-foreground">{val}</span> {outDef?.unit || ''}
+                                        </span>
+                                      )
+                                    })}
+                                  </div>
+                                </div>
                               </div>
-                            ))}
-                          </div>
-                        ) : (
-                          <p className="text-sm text-red-600 flex items-center gap-1">
-                            <AlertTriangle className="h-3 w-3" /> {result.error}
-                          </p>
-                        )}
-                      </div>
-                    ))}
-                  </CardContent>
-                </Card>
-              )}
-
-              {/* How It Works */}
-              {selectedPipeline.steps.length > 0 && (
+                            )
+                          })}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  )}
+                </>
+              ) : (
                 <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-sm flex items-center gap-2">
-                      <Info className="h-4 w-4 text-emerald-600" />
-                      Bidirectional Solving
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="space-y-2 text-xs text-muted-foreground">
-                      <div className="flex items-start gap-2">
-                        <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500 mt-0.5 shrink-0" />
-                        <p><strong>Forward:</strong> Fill all input values → outputs are auto-calculated</p>
-                      </div>
-                      <div className="flex items-start gap-2">
-                        <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500 mt-0.5 shrink-0" />
-                        <p><strong>Reverse:</strong> Fill output + other inputs → missing input is numerically solved</p>
-                      </div>
-                      <div className="flex items-start gap-2">
-                        <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500 mt-0.5 shrink-0" />
-                        <p><strong>Chain:</strong> Calculated outputs automatically propagate to subsequent steps</p>
-                      </div>
-                      <div className="flex items-start gap-2">
-                        <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500 mt-0.5 shrink-0" />
-                        <p><strong>Real-time:</strong> Auto-calculates after 300ms debounce as you type</p>
-                      </div>
-                    </div>
+                  <CardContent className="p-8 text-center">
+                    <FileText className="h-8 w-8 mx-auto text-muted-foreground" />
+                    <p className="mt-2 text-muted-foreground">This pipeline has no steps defined yet.</p>
                   </CardContent>
                 </Card>
               )}
             </div>
           ) : (
-            <Card className="flex items-center justify-center h-64">
-              <div className="text-center text-muted-foreground">
-                <GitBranch className="h-12 w-12 mx-auto mb-3 opacity-50" />
-                <p>Select a pipeline to begin</p>
-                <p className="text-sm mt-1">Fill any variable and the unknown is auto-calculated</p>
-              </div>
+            <Card>
+              <CardContent className="p-8 text-center">
+                <GitBranch className="h-12 w-12 mx-auto text-muted-foreground/30" />
+                <h3 className="mt-4 text-lg font-semibold">Select a Pipeline</h3>
+                <p className="text-sm text-muted-foreground mt-1 max-w-md mx-auto">
+                  Choose a pipeline from the list to start an interactive multi-step calculation.
+                  All variables are editable — fill any combination and the unknown is auto-calculated.
+                </p>
+              </CardContent>
             </Card>
           )}
         </div>
