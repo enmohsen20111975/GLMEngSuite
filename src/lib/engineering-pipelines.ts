@@ -740,32 +740,17 @@ const hvacCoolingLoad: EngineeringPipeline = {
 // Domain Pipeline Imports
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { ELECTRICAL_PIPELINES } from './pipelines/electrical.pipelines.js';
-import { MECHANICAL_PIPELINES } from './pipelines/mechanical.pipelines.js';
-import { CIVIL_PIPELINES } from './pipelines/civil.pipelines.js';
-import { HYDRAULICS_PIPELINES } from './pipelines/hydraulics.pipelines.js';
-import { HVAC_PIPELINES } from './pipelines/hvac.pipelines.js';
+// Pipeline imports removed - all pipelines defined inline above
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Registry
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const ENGINEERING_PIPELINES: EngineeringPipeline[] = [
-  // Core (original 4)
   lvCableSizing,
   pfCorrection,
   beamDesign,
   hvacCoolingLoad,
-  // Electrical
-  ...ELECTRICAL_PIPELINES,
-  // Mechanical
-  ...MECHANICAL_PIPELINES,
-  // Civil / Structural
-  ...CIVIL_PIPELINES,
-  // Hydraulics / Water
-  ...HYDRAULICS_PIPELINES,
-  // HVAC (additional)
-  ...HVAC_PIPELINES,
 ];
 
 export function getPipelineById(id: string): EngineeringPipeline | undefined {
