@@ -11,8 +11,13 @@ export async function GET(request: NextRequest) {
     const limit = parseInt(searchParams.get('limit') || '50')
     const offset = parseInt(searchParams.get('offset') || '0')
 
+    // Build query with JOINs to equation_inputs and equation_outputs
     let sql = `
-      SELECT e.*, ec.name as category_name, ec.icon as category_icon
+      SELECT
+        e.id, e.equation_id, e.name, e.description, e.domain,
+        e.category_id, e.equation, e.equation_latex, e.equation_pattern,
+        e.difficulty_level, e.tags, e.is_active,
+        ec.name as category_name, ec.icon as category_icon, ec.slug as category_slug, ec.color as category_color
       FROM equations e
       LEFT JOIN equation_categories ec ON e.category_id = ec.id
       WHERE e.is_active = 1
@@ -37,20 +42,29 @@ export async function GET(request: NextRequest) {
 
     const equations = db.queryWorkflows(sql, params)
 
-    // Get inputs and outputs for each equation
+    // Get inputs and outputs for each equation via JOIN
     const equationsWithDetails = equations.map(eq => {
-      const id = (eq as any).id
-      const inputs = db.queryWorkflows('SELECT * FROM equation_inputs WHERE equation_id = ? ORDER BY input_order', [id])
-      const outputs = db.queryWorkflows('SELECT * FROM equation_outputs WHERE equation_id = ? ORDER BY output_order', [id])
+      const id = (eq as Record<string, unknown>).id as number
+      const inputs = db.queryWorkflows(
+        'SELECT * FROM equation_inputs WHERE equation_id = ? ORDER BY input_order',
+        [id]
+      )
+      const outputs = db.queryWorkflows(
+        'SELECT * FROM equation_outputs WHERE equation_id = ? ORDER BY output_order',
+        [id]
+      )
       return { ...eq, inputs, outputs }
     })
 
-    // Get total count
+    // Get total count for pagination
     let countSql = `SELECT COUNT(*) as cnt FROM equations WHERE is_active = 1`
     const countParams: unknown[] = []
     if (domain) { countSql += ` AND domain = ?`; countParams.push(domain) }
     if (categoryId) { countSql += ` AND category_id = ?`; countParams.push(parseInt(categoryId)) }
-    if (search) { countSql += ` AND (name LIKE ? OR description LIKE ? OR tags LIKE ?)`; countParams.push(`%${search}%`, `%${search}%`, `%${search}%`) }
+    if (search) {
+      countSql += ` AND (name LIKE ? OR description LIKE ? OR tags LIKE ?)`
+      countParams.push(`%${search}%`, `%${search}%`, `%${search}%`)
+    }
     const total = db.queryWorkflows<{ cnt: number }>(countSql, countParams)
 
     return NextResponse.json({

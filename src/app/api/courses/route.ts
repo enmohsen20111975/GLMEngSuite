@@ -8,6 +8,7 @@ export async function GET(request: NextRequest) {
     const domain = searchParams.get('domain')
     const search = searchParams.get('search')
 
+    // Query courses from engmastery.db
     let sql = `SELECT c.* FROM courses c WHERE 1=1`
     const params: unknown[] = []
 
@@ -20,26 +21,60 @@ export async function GET(request: NextRequest) {
       params.push(`%${search}%`, `%${search}%`)
     }
 
-    sql += ` ORDER BY c.order_index`
+    sql += ` ORDER BY c.id`
+    const courses = db.queryEngmastery(sql, params)
 
-    const courses = db.queryCourses(sql, params)
-
-    // Add module count
+    // Enrich each course with module/lesson counts and full hierarchy
     const coursesWithStats = courses.map(course => {
-      const modules = db.queryCourses<{ cnt: number }>(
-        'SELECT COUNT(*) as cnt FROM modules WHERE course_id = ?',
-        [(course as any).id]
+      const c = course as Record<string, unknown>
+      const courseId = c.id as string
+
+      // Get modules
+      const modules = db.queryEngmastery<Record<string, unknown>>(
+        'SELECT * FROM modules WHERE course_id = ? ORDER BY order_index',
+        [courseId]
       )
-      const lessons = db.queryCourses<{ cnt: number }>(
-        'SELECT COUNT(*) as cnt FROM lessons l JOIN chapters ch ON l.chapter_id = ch.id JOIN modules m ON ch.module_id = m.id WHERE m.course_id = ?',
-        [(course as any).id]
-      )
-      return { ...course, module_count: modules[0]?.cnt || 0, lesson_count: lessons[0]?.cnt || 0 }
+
+      // Count lessons across all modules
+      let totalLessons = 0
+      const modulesWithLessons = modules.map(mod => {
+        const chapters = db.queryEngmastery<Record<string, unknown>>(
+          'SELECT * FROM chapters WHERE module_id = ? ORDER BY order_index',
+          [mod.id as string]
+        )
+
+        let moduleLessonCount = 0
+        const chaptersWithLessons = chapters.map(ch => {
+          const lessons = db.queryEngmastery<Record<string, unknown>>(
+            'SELECT * FROM lessons WHERE chapter_id = ? ORDER BY order_index',
+            [ch.id as string]
+          )
+          moduleLessonCount += lessons.length
+          return { ...ch, lessons }
+        })
+
+        totalLessons += moduleLessonCount
+        return {
+          ...mod,
+          chapters: chaptersWithLessons,
+          lesson_count: moduleLessonCount,
+        }
+      })
+
+      return {
+        ...c,
+        module_count: modules.length,
+        lesson_count: totalLessons,
+        modules: modulesWithLessons,
+      }
     })
 
     return NextResponse.json({ success: true, data: coursesWithStats })
   } catch (error) {
     console.error('Courses API error:', error)
-    return NextResponse.json({ success: false, error: 'Failed to fetch courses' }, { status: 500 })
+    return NextResponse.json(
+      { success: false, error: 'Failed to fetch courses' },
+      { status: 500 }
+    )
   }
 }

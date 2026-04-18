@@ -9,11 +9,16 @@ export async function GET(request: NextRequest) {
     const domain = searchParams.get('domain')
     const search = searchParams.get('search')
 
-    // DB pipelines
-    let sql = `SELECT cp.*, COUNT(cs.id) as step_count
+    // DB pipelines from workflows.db with step counts
+    let sql = `
+      SELECT cp.id, cp.pipeline_id, cp.name, cp.description, cp.domain,
+             cp.standard_id, cp.version, cp.estimated_time, cp.difficulty_level,
+             cp.tags, cp.is_active,
+             COUNT(cs.id) as step_count
       FROM calculation_pipelines cp
       LEFT JOIN calculation_steps cs ON cp.id = cs.pipeline_id AND cs.is_active = 1
-      WHERE cp.is_active = 1`
+      WHERE cp.is_active = 1
+    `
     const params: unknown[] = []
 
     if (domain) {
@@ -28,7 +33,7 @@ export async function GET(request: NextRequest) {
     sql += ` GROUP BY cp.id ORDER BY cp.name`
     const dbPipelines = db.queryWorkflows(sql, params)
 
-    // Local engineering pipelines
+    // Local engineering pipelines (hardcoded)
     const localPipelines = ENGINEERING_PIPELINES.map(p => ({
       id: p.id,
       pipeline_id: p.id,
@@ -42,12 +47,13 @@ export async function GET(request: NextRequest) {
       icon: p.icon,
     }))
 
-    // Combine
+    // Combine DB + local pipelines
     let allPipelines = [
       ...dbPipelines.map(p => ({ ...p, is_local: false })),
       ...localPipelines,
     ]
 
+    // Apply filters to combined set
     if (domain) {
       allPipelines = allPipelines.filter(p => p.domain === domain)
     }
@@ -61,6 +67,9 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ success: true, data: allPipelines })
   } catch (error) {
     console.error('Pipelines API error:', error)
-    return NextResponse.json({ success: false, error: 'Failed to fetch pipelines' }, { status: 500 })
+    return NextResponse.json(
+      { success: false, error: 'Failed to fetch pipelines' },
+      { status: 500 }
+    )
   }
 }

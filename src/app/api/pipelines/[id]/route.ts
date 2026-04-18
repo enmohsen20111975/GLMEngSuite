@@ -10,17 +10,18 @@ export async function GET(
     const { id } = await params
     const db = await ensureDatabase()
 
-    // Try local pipeline first
+    // Try local pipeline first (hardcoded engineering pipelines)
     const localPipeline = getPipelineById(id)
     if (localPipeline) {
       return NextResponse.json({
         success: true,
         data: {
           id: localPipeline.id,
+          pipeline_id: localPipeline.id,
           name: localPipeline.name,
           description: localPipeline.description,
           domain: localPipeline.domain,
-          difficulty: localPipeline.difficulty,
+          difficulty_level: localPipeline.difficulty,
           estimated_time: localPipeline.estimated_time,
           icon: localPipeline.icon,
           is_local: true,
@@ -41,27 +42,49 @@ export async function GET(
       })
     }
 
-    // DB pipeline
-    const pipeline = db.queryOneWorkflow<any>(
+    // Try DB pipeline from workflows.db
+    const pipeline = db.queryOneWorkflow<Record<string, unknown>>(
       'SELECT * FROM calculation_pipelines WHERE id = ? OR pipeline_id = ?',
       [parseInt(id), id]
     )
 
     if (!pipeline) {
-      return NextResponse.json({ success: false, error: 'Pipeline not found' }, { status: 404 })
+      return NextResponse.json(
+        { success: false, error: 'Pipeline not found' },
+        { status: 404 }
+      )
     }
 
-    const steps = db.queryWorkflows<any>(
+    const pipelineDbId = pipeline.id as number
+
+    // Get pipeline steps
+    const steps = db.queryWorkflows<Record<string, unknown>>(
       'SELECT * FROM calculation_steps WHERE pipeline_id = ? AND is_active = 1 ORDER BY step_number',
-      [pipeline.id]
+      [pipelineDbId]
+    )
+
+    // Get dependencies between steps
+    const dependencies = db.queryWorkflows<Record<string, unknown>>(
+      `SELECT cd.* FROM calculation_dependencies cd
+       JOIN calculation_steps cs ON cd.step_id = cs.id
+       WHERE cs.pipeline_id = ?`,
+      [pipelineDbId]
     )
 
     return NextResponse.json({
       success: true,
-      data: { ...pipeline, is_local: false, steps }
+      data: {
+        ...pipeline,
+        is_local: false,
+        steps,
+        dependencies,
+      }
     })
   } catch (error) {
     console.error('Pipeline detail API error:', error)
-    return NextResponse.json({ success: false, error: 'Failed to fetch pipeline' }, { status: 500 })
+    return NextResponse.json(
+      { success: false, error: 'Failed to fetch pipeline' },
+      { status: 500 }
+    )
   }
 }

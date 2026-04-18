@@ -9,59 +9,104 @@ export async function POST(request: NextRequest) {
     const { equationId, inputs } = body
 
     if (!equationId || !inputs) {
-      return NextResponse.json({ success: false, error: 'equationId and inputs are required' }, { status: 400 })
+      return NextResponse.json(
+        { success: false, error: 'equationId and inputs are required' },
+        { status: 400 }
+      )
     }
 
-    // Load equation
-    const equation = db.queryOneWorkflow<any>(
-      'SELECT * FROM equations WHERE id = ? OR equation_id = ?',
-      [equationId, equationId]
+    // Load equation from workflows.db - try by id (numeric) or equation_id (string)
+    const equation = db.queryOneWorkflow<Record<string, unknown>>(
+      `SELECT * FROM equations WHERE id = ? OR equation_id = ?`,
+      [equationId, String(equationId)]
     )
 
     if (!equation) {
-      return NextResponse.json({ success: false, error: 'Equation not found' }, { status: 404 })
+      return NextResponse.json(
+        { success: false, error: 'Equation not found' },
+        { status: 404 }
+      )
     }
 
-    // Load inputs/outputs
-    const eqInputs = db.queryWorkflows<any>(
-      'SELECT * FROM equation_inputs WHERE equation_id = ? ORDER BY input_order',
-      [equation.id]
-    )
-    const eqOutputs = db.queryWorkflows<any>(
-      'SELECT * FROM equation_outputs WHERE equation_id = ? ORDER BY output_order',
-      [equation.id]
+    const eqId = equation.id as number
+
+    // Load inputs joined with equation
+    const eqInputs = db.queryWorkflows<Record<string, unknown>>(
+      `SELECT ei.* FROM equation_inputs ei
+       WHERE ei.equation_id = ?
+       ORDER BY ei.input_order`,
+      [eqId]
     )
 
-    // Build context from user inputs
+    // Load outputs joined with equation
+    const eqOutputs = db.queryWorkflows<Record<string, unknown>>(
+      `SELECT eo.* FROM equation_outputs eo
+       WHERE eo.equation_id = ?
+       ORDER BY eo.output_order`,
+      [eqId]
+    )
+
+    // Build evaluation context from user inputs + defaults
     const context: Record<string, number> = {}
     for (const inp of eqInputs) {
-      const val = inputs[inp.symbol] ?? inputs[inp.name] ?? inp.default_value
+      const symbol = (inp.symbol as string) || (inp.name as string)
+      const val = (inputs as Record<string, unknown>)[symbol] ??
+        (inputs as Record<string, unknown>)[inp.name as string] ??
+        inp.default_value
       if (val !== undefined && val !== null) {
-        context[inp.symbol] = Number(val)
+        context[symbol] = Number(val)
       }
     }
 
-    // Solve using evaluateFormula
+    // Solve the equation using evaluateFormula
     const outputs: Record<string, number> = {}
-    if (equation.equation || equation.formula) {
-      const formula = equation.equation || equation.formula
-      // Try to evaluate the formula
-      try {
-        const result = evaluateFormula(formula, context)
-        outputs['result'] = result
-      } catch {
-        outputs['result'] = 0
+    const formula = (equation.equation as string) || (equation.formula as string) || ''
+
+    if (formula) {
+      // The equation field may contain multiple lines separated by ; or \n
+      // Each line may be: output_var = expression OR just an expression
+      const formulas = formula.replace(/;/g, '\n').split('\n').map(f => f.trim()).filter(Boolean)
+
+      for (const f of formulas) {
+        if (f.includes('=') && !f.includes('==')) {
+          const parts = f.split('=')
+          if (parts.length >= 2) {
+            const varName = parts[0].trim()
+            const expr = parts.slice(1).join('=').trim()
+            try {
+              const result = evaluateFormula(expr, context)
+              context[varName] = result
+              outputs[varName] = result
+            } catch {
+              // Skip invalid formulas
+            }
+          }
+        } else {
+          try {
+            const result = evaluateFormula(f, context)
+            outputs['result'] = result
+          } catch {
+            // Skip invalid formulas
+          }
+        }
       }
     }
 
-    // Also try solving individual output formulas
+    // Also evaluate individual output formulas if present
     for (const out of eqOutputs) {
-      if (out.formula) {
+      const outFormula = out.formula as string | null
+      const symbol = (out.symbol as string) || (out.name as string)
+      if (outFormula) {
         try {
-          outputs[out.symbol || out.name] = evaluateFormula(out.formula, context)
+          const result = evaluateFormula(outFormula, context)
+          outputs[symbol] = result
         } catch {
-          // skip
+          // Skip invalid output formulas
         }
+      } else if (symbol in outputs) {
+        // Already computed from main formula
+      } else if (symbol in context) {
+        outputs[symbol] = context[symbol]
       }
     }
 
@@ -70,9 +115,11 @@ export async function POST(request: NextRequest) {
       data: {
         equation: {
           id: equation.id,
+          equation_id: equation.equation_id,
           name: equation.name,
           formula: equation.equation || equation.formula,
           equation_latex: equation.equation_latex,
+          domain: equation.domain,
         },
         inputs: context,
         outputs,
@@ -82,6 +129,9 @@ export async function POST(request: NextRequest) {
     })
   } catch (error) {
     console.error('Solve API error:', error)
-    return NextResponse.json({ success: false, error: 'Failed to solve equation' }, { status: 500 })
+    return NextResponse.json(
+      { success: false, error: 'Failed to solve equation' },
+      { status: 500 }
+    )
   }
 }

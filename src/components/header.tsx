@@ -20,8 +20,12 @@ export function Header({ onToggleSidebar, sidebarOpen }: HeaderProps) {
     pipelines: 'Calculation Pipelines',
     workflow: 'Workflow Builder',
     'unit-converter': 'Unit Converter',
+    'data-analysis': 'Data Analysis',
+    'pdf-editor': 'PDF Editor',
+    'logic-simulator': 'Logic Simulator',
+    'electrical-simulator': 'Electrical Simulator',
+    'diagram-studio': 'Diagram Studio',
     learning: 'Learning Platform',
-    'ai-assistant': 'AI Assistant',
     settings: 'Settings',
   }
 

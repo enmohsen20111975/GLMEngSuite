@@ -9,13 +9,25 @@ export async function POST(request: NextRequest) {
     const { pipelineId, inputs } = body
 
     if (!pipelineId || !inputs) {
-      return NextResponse.json({ success: false, error: 'pipelineId and inputs are required' }, { status: 400 })
+      return NextResponse.json(
+        { success: false, error: 'pipelineId and inputs are required' },
+        { status: 400 }
+      )
     }
 
-    // Try local pipeline first
+    // Try local pipeline first (hardcoded engineering pipelines)
     const localPipeline = getPipelineById(pipelineId)
     if (localPipeline) {
-      const stepResults: any[] = []
+      const stepResults: Array<{
+        step_number: number
+        step_name: string
+        inputs: Record<string, number | string>
+        outputs: Record<string, number | string | boolean>
+        formula_display?: string[]
+        standard_ref?: string
+        success: boolean
+        error?: string
+      }> = []
       const accumulatedInputs: Record<string, number | string> = { ...inputs }
 
       for (const step of localPipeline.steps) {
@@ -38,13 +50,13 @@ export async function POST(request: NextRequest) {
             success: true,
           })
           Object.assign(accumulatedInputs, outputs)
-        } catch (err: any) {
+        } catch (err: unknown) {
           stepResults.push({
             step_number: step.stepNumber,
             step_name: step.name,
             inputs: stepInputs,
             outputs: {},
-            error: err.message,
+            error: err instanceof Error ? err.message : String(err),
             success: false,
           })
           break
@@ -62,7 +74,7 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    // Fall back to DB pipeline
+    // Fall back to DB pipeline using calculation engine
     const db = await ensureDatabase()
     const engine = getCalculationEngine()
     const result = engine.executePipeline(pipelineId, inputs)
@@ -77,6 +89,9 @@ export async function POST(request: NextRequest) {
     })
   } catch (error) {
     console.error('Pipeline execute API error:', error)
-    return NextResponse.json({ success: false, error: 'Failed to execute pipeline' }, { status: 500 })
+    return NextResponse.json(
+      { success: false, error: 'Failed to execute pipeline' },
+      { status: 500 }
+    )
   }
 }
