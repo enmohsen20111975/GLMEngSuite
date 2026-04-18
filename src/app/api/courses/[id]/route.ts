@@ -10,7 +10,7 @@ export async function GET(
     const db = await ensureDatabase()
 
     // Query course from engmastery.db
-    const course = db.queryOneEngmastery<Record<string, unknown>>(
+    const course = await db.queryOneEngmastery<Record<string, unknown>>(
       'SELECT * FROM courses WHERE id = ?',
       [id]
     )
@@ -23,27 +23,27 @@ export async function GET(
     }
 
     // Get modules for this course
-    const modules = db.queryEngmastery<Record<string, unknown>>(
+    const modules = await db.queryEngmastery<Record<string, unknown>>(
       'SELECT * FROM modules WHERE course_id = ? ORDER BY order_index',
       [id]
     )
 
     // Build full hierarchy: modules → chapters → lessons
-    const modulesWithChapters = modules.map(mod => {
-      const chapters = db.queryEngmastery<Record<string, unknown>>(
+    const modulesWithChapters = await Promise.all(modules.map(async mod => {
+      const chapters = await db.queryEngmastery<Record<string, unknown>>(
         'SELECT * FROM chapters WHERE module_id = ? ORDER BY order_index',
         [mod.id as string]
       )
 
-      const chaptersWithLessons = chapters.map(ch => {
-        const lessons = db.queryEngmastery<Record<string, unknown>>(
+      const chaptersWithLessons = await Promise.all(chapters.map(async ch => {
+        const lessons = await db.queryEngmastery<Record<string, unknown>>(
           'SELECT * FROM lessons WHERE chapter_id = ? ORDER BY order_index',
           [ch.id as string]
         )
 
         // Attach quiz for each lesson
-        const lessonsWithQuiz = lessons.map(lesson => {
-          const quiz = db.queryOneEngmastery<Record<string, unknown>>(
+        const lessonsWithQuiz = await Promise.all(lessons.map(async lesson => {
+          const quiz = await db.queryOneEngmastery<Record<string, unknown>>(
             'SELECT * FROM quizzes WHERE lesson_id = ?',
             [lesson.id as string]
           )
@@ -51,13 +51,13 @@ export async function GET(
             ...lesson,
             quiz: quiz ? (typeof quiz.questions === 'string' ? JSON.parse(quiz.questions) : quiz.questions) : [],
           }
-        })
+        }))
 
         return { ...ch, lessons: lessonsWithQuiz }
-      })
+      }))
 
       return { ...mod, chapters: chaptersWithLessons }
-    })
+    }))
 
     return NextResponse.json({
       success: true,

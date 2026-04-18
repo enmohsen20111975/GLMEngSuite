@@ -26,11 +26,11 @@ export async function GET(request: NextRequest) {
 
     sql += ` ORDER BY es.domain, es.standard_code`
 
-    const standards = db.queryWorkflows<Record<string, unknown>>(sql, params)
+    const standards = await db.queryWorkflows<Record<string, unknown>>(sql, params)
 
     // Attach coefficients for each standard
-    const standardsWithCoefficients = standards.map(std => {
-      const coefficients = db.queryWorkflows<Record<string, unknown>>(
+    const standardsWithCoefficients = await Promise.all(standards.map(async std => {
+      const coefficients = await db.queryWorkflows<Record<string, unknown>>(
         'SELECT * FROM standard_coefficients WHERE standard_id = ?',
         [std.id as number]
       )
@@ -49,7 +49,7 @@ export async function GET(request: NextRequest) {
       })
 
       return { ...std, coefficients: parsedCoefficients }
-    })
+    }))
 
     return NextResponse.json({ success: true, data: standardsWithCoefficients })
   } catch (error) {

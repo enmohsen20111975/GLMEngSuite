@@ -22,7 +22,7 @@ export async function GET(request: NextRequest) {
 
     sql += ` ORDER BY category, name`
 
-    const templates = db.queryWorkflows<Record<string, unknown>>(sql, params)
+    const templates = await db.queryWorkflows<Record<string, unknown>>(sql, params)
 
     // Parse JSON fields (sections, styling)
     const parsedTemplates = templates.map(tmpl => {

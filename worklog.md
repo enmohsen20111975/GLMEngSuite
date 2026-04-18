@@ -1,96 +1,32 @@
-# EngiSuite Analytics - Work Log
-
 ---
 Task ID: 1
 Agent: Main
-Task: Fix PDF Editor DOMMatrix crash and restart server
+Task: Fix server and implement interactive bidirectional equation solving
 
 Work Log:
-- Identified that pdfjs-dist uses DOMMatrix (browser-only API) causing SSR crash
-- Removed `import type { PDFDocumentProxy } from 'pdfjs-dist'` - replaced with local type definition
-- Changed `typeof import('pdfjs-dist')` to `Record<string, unknown>` to avoid webpack module resolution
-- Cleaned up unused eslint-disable directive
-- Restarted server successfully, homepage returns 200
+- Diagnosed server OOM issue caused by loading 31MB courses.db into memory all at once
+- Rewrote database.ts to use lazy loading - databases only load when their API is called
+- Updated all 11 API route files to use async/await for database calls
+- Optimized equations API from N+1 queries to batch queries (2 queries instead of 2*N)
+- Optimized stats API to use Promise.all for parallel queries with fallback for courses.db
+- Rewrote calculators-section.tsx with major improvements:
+  - DB inputs/outputs as PRIMARY source of truth (formula parser as fallback)
+  - All variables (inputs AND outputs) have editable number fields
+  - Instant auto-calculation with 300ms debounce
+  - Bidirectional solving: fill any variable, the unknown auto-calculates
+  - Visual distinction: inputs=standard, outputs=amber, auto-calc=emerald, manual=amber badge
+  - Robust solver: forward (direct eval) + reverse (numerical bisection)
+  - Error handling for multiple unknowns, NaN results, solve failures
+- Set up favicon from uploaded images (32px and 180px apple-touch-icon)
+- Verified Data Analysis section is already complete with upload, query builder, charts, reports, dashboards
+- Verified Logic Simulator section is already complete with gates, wiring, canvas simulation
+- Verified Pipelines section already has bidirectional solving with auto-calc
+- Verified Workflow Builder section already has bidirectional solving with calculation nodes
+- Server now runs stably with NODE_OPTIONS="--max-old-space-size=384"
 
 Stage Summary:
-- PDF Editor no longer crashes the server
-- Server runs on port 3000 with Turbopack
-- sql.js databases initialize correctly on first API call
-
----
-Task ID: 2
-Agent: Full-stack Developer Subagent
-Task: Enhance Pipelines Section with Bidirectional Equation Solving
-
-Work Log:
-- Rewrote pipelines-section.tsx with bidirectional solving
-- All step variables (inputs + outputs) are now editable
-- Added numericalSolveStep() using bisection method for reverse calculation
-- 300ms debounced auto-calculation on value changes
-- Visual feedback: green borders/backgrounds for auto-calculated, "auto"/"calculated"/"linked" badges
-- Chain propagation: step outputs flow to subsequent step inputs
-- Pill-based step navigation showing calculation status
-- ESLint passes with 0 errors
-
-Stage Summary:
-- Pipelines section now has full bidirectional solving
-- Matches the Calculators section's UX pattern
-- Visual feedback clearly distinguishes manual vs auto values
-
----
-Task ID: 3
-Agent: Full-stack Developer Subagent
-Task: Enhance Workflow Builder with Bidirectional Solving
-
-Work Log:
-- Added WorkflowNodeData fields: outputValues, valueSource
-- Created bidirectional solver functions: numericalSolve(), solveForUnknown(), bidirectionalSolve()
-- New CalculationNodeEditor component with editable fields for all variables
-- Forward solve: all inputs → compute outputs instantly
-- Reverse solve: output + partial inputs → numerical bisection for missing input
-- 300ms debounce on value changes + explicit Solve button
-- Visual feedback: green (auto), blue (manual), violet (propagated) badges
-- Enhanced executeWorkflow with proper edge propagation
-- ESLint passes with 0 errors
-
-Stage Summary:
-- Workflow Builder calculation nodes now support bidirectional solving
-- Properties panel shows all variables as editable fields
-- Run All button propagates values through connected edges
-
----
-Task ID: 4
-Agent: Full-stack Developer Subagent
-Task: Create Equation Solve API Endpoint
-
-Work Log:
-- Completely rewrote /api/equations/solve/route.ts
-- GET handler returns equation metadata (name, formula, inputs, outputs)
-- POST handler supports bidirectional solving
-- Direct evaluation when solving for output with all inputs known
-- Numerical bisection when solving for input with output known
-- Auto-detection of unknown variable if solve_for not specified
-- Proper error handling with HTTP status codes (400, 404, 422, 500)
-- Uses evaluateFormula from calculation-engine.ts
-- Default values auto-applied from DB definitions
-
-Stage Summary:
-- Robust solve API supporting both forward and reverse calculation
-- Can load equations by ID from DB or accept formulas directly
-- Returns method used (direct vs numerical) in response
-
----
-Task ID: 5
-Agent: Main
-Task: Create PROJECT_STATUS.md for persistent cross-session memory
-
-Work Log:
-- Created comprehensive project status document
-- Documented all features with completion status
-- Listed technology stack, database mapping, architecture decisions
-- Included known issues and server restart instructions
-- Listed all critical files
-
-Stage Summary:
-- PROJECT_STATUS.md created at /home/z/my-project/PROJECT_STATUS.md
-- Contains all essential information for continuing work across sessions
+- Server OOM fixed with lazy database loading
+- Interactive bidirectional equation solving implemented in Calculators section
+- All existing sections verified as functional
+- Favicon configured from user's uploaded images
+- Server running stably on port 3000

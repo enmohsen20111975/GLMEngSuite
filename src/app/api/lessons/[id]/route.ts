@@ -10,7 +10,7 @@ export async function GET(
     const db = await ensureDatabase()
 
     // Query lesson from engmastery.db
-    const lesson = db.queryOneEngmastery<Record<string, unknown>>(
+    const lesson = await db.queryOneEngmastery<Record<string, unknown>>(
       'SELECT * FROM lessons WHERE id = ?',
       [id]
     )
@@ -23,7 +23,7 @@ export async function GET(
     }
 
     // Get quiz for this lesson
-    const quiz = db.queryOneEngmastery<Record<string, unknown>>(
+    const quiz = await db.queryOneEngmastery<Record<string, unknown>>(
       'SELECT * FROM quizzes WHERE lesson_id = ?',
       [id]
     )
@@ -42,7 +42,7 @@ export async function GET(
 
     // Get chapter info for navigation context
     const chapterId = lesson.chapter_id as string
-    const chapter = db.queryOneEngmastery<Record<string, unknown>>(
+    const chapter = await db.queryOneEngmastery<Record<string, unknown>>(
       'SELECT * FROM chapters WHERE id = ?',
       [chapterId]
     )
@@ -51,7 +51,7 @@ export async function GET(
     let prevLesson: Record<string, unknown> | undefined
     let nextLesson: Record<string, unknown> | undefined
     if (chapter) {
-      const chapterLessons = db.queryEngmastery<Record<string, unknown>>(
+      const chapterLessons = await db.queryEngmastery<Record<string, unknown>>(
         'SELECT id, title, type, duration, order_index FROM lessons WHERE chapter_id = ? ORDER BY order_index',
         [chapterId]
       )

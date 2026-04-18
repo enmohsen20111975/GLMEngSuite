@@ -31,7 +31,7 @@ export async function GET(request: NextRequest) {
     }
 
     sql += ` GROUP BY cp.id ORDER BY cp.name`
-    const dbPipelines = db.queryWorkflows(sql, params)
+    const dbPipelines = await db.queryWorkflows(sql, params)
 
     // Local engineering pipelines (hardcoded)
     const localPipelines = ENGINEERING_PIPELINES.map(p => ({

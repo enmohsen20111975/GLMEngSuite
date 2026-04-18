@@ -58,7 +58,7 @@ export async function GET(request: NextRequest) {
     const db = await ensureDatabase()
 
     // Load equation from workflows database
-    const equation = db.queryOneWorkflow<Record<string, unknown>>(
+    const equation = await db.queryOneWorkflow<Record<string, unknown>>(
       `SELECT * FROM equations WHERE id = ? OR equation_id = ?`,
       [Number(equationId) || 0, equationId]
     )
@@ -73,13 +73,13 @@ export async function GET(request: NextRequest) {
     const eqId = equation.id as number
 
     // Load input definitions
-    const eqInputs = db.queryWorkflows<Record<string, unknown>>(
+    const eqInputs = await db.queryWorkflows<Record<string, unknown>>(
       `SELECT * FROM equation_inputs WHERE equation_id = ? ORDER BY input_order`,
       [eqId]
     )
 
     // Load output definitions
-    const eqOutputs = db.queryWorkflows<Record<string, unknown>>(
+    const eqOutputs = await db.queryWorkflows<Record<string, unknown>>(
       `SELECT * FROM equation_outputs WHERE equation_id = ? ORDER BY output_order`,
       [eqId]
     )
@@ -153,7 +153,7 @@ export async function POST(request: NextRequest) {
 
     // ── Load equation from DB if equation_id provided ──
     if (equation_id) {
-      const equation = db.queryOneWorkflow<Record<string, unknown>>(
+      const equation = await db.queryOneWorkflow<Record<string, unknown>>(
         `SELECT * FROM equations WHERE id = ? OR equation_id = ?`,
         [Number(equation_id) || 0, String(equation_id)]
       )
@@ -168,11 +168,11 @@ export async function POST(request: NextRequest) {
       const eqId = equation.id as number
       formula = formula || (equation.equation as string) || (equation.formula as string) || ''
 
-      const eqInputs = db.queryWorkflows<Record<string, unknown>>(
+      const eqInputs = await db.queryWorkflows<Record<string, unknown>>(
         `SELECT * FROM equation_inputs WHERE equation_id = ? ORDER BY input_order`,
         [eqId]
       )
-      const eqOutputs = db.queryWorkflows<Record<string, unknown>>(
+      const eqOutputs = await db.queryWorkflows<Record<string, unknown>>(
         `SELECT * FROM equation_outputs WHERE equation_id = ? ORDER BY output_order`,
         [eqId]
       )

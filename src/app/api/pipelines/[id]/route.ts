@@ -43,7 +43,7 @@ export async function GET(
     }
 
     // Try DB pipeline from workflows.db
-    const pipeline = db.queryOneWorkflow<Record<string, unknown>>(
+    const pipeline = await db.queryOneWorkflow<Record<string, unknown>>(
       'SELECT * FROM calculation_pipelines WHERE id = ? OR pipeline_id = ?',
       [parseInt(id), id]
     )
@@ -58,13 +58,13 @@ export async function GET(
     const pipelineDbId = pipeline.id as number
 
     // Get pipeline steps
-    const steps = db.queryWorkflows<Record<string, unknown>>(
+    const steps = await db.queryWorkflows<Record<string, unknown>>(
       'SELECT * FROM calculation_steps WHERE pipeline_id = ? AND is_active = 1 ORDER BY step_number',
       [pipelineDbId]
     )
 
     // Get dependencies between steps
-    const dependencies = db.queryWorkflows<Record<string, unknown>>(
+    const dependencies = await db.queryWorkflows<Record<string, unknown>>(
       `SELECT cd.* FROM calculation_dependencies cd
        JOIN calculation_steps cs ON cd.step_id = cs.id
        WHERE cs.pipeline_id = ?`,

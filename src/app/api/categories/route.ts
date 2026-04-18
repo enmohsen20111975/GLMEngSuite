@@ -24,7 +24,7 @@ export async function GET(request: NextRequest) {
 
     sql += ` GROUP BY ec.id ORDER BY ec.display_order, ec.name`
 
-    const categories = db.queryWorkflows(sql, params)
+    const categories = await db.queryWorkflows(sql, params)
 
     return NextResponse.json({ success: true, data: categories })
   } catch (error) {

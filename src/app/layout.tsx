@@ -18,7 +18,14 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "EngiSuite Analytics - Engineering Calculation Platform",
   description: "Professional engineering calculation, pipeline, and learning platform. Solve equations, run multi-step calculations, and advance your engineering knowledge.",
-  keywords: ["engineering", "calculations", "analytics", "pipelines", "learning", "AI assistant"],
+  keywords: ["engineering", "calculations", "analytics", "pipelines", "learning"],
+  icons: {
+    icon: "/favicon-32.png",
+    apple: "/apple-touch-icon.png",
+  },
+  openGraph: {
+    images: ["/og-image.png"],
+  },
 };
 
 export default function RootLayout({

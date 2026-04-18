@@ -1,6 +1,6 @@
 /**
  * Database Service - sql.js SQLite (Hostinger-compatible, no native compilation)
- * Loads and queries the uploaded engineering databases
+ * Uses on-demand loading with memory management
  */
 
 import initSqlJs, { type Database as SqlJsDatabase } from 'sql.js'
@@ -14,56 +14,48 @@ const DB_PATHS = {
   engmastery: path.resolve(process.cwd(), 'upload/Databases_extracted/Databases/engmastery.db'),
 }
 
-// Singleton instances
+// Singleton instances - cached after first load
+let sqlModule: any = null
 let coursesDb: SqlJsDatabase | null = null
 let workflowsDb: SqlJsDatabase | null = null
 let engmasteryDb: SqlJsDatabase | null = null
-let initialized = false
 
 /**
- * Initialize all database connections
+ * Get the sql.js module (initialize once)
  */
-export async function initDatabase(): Promise<void> {
-  if (initialized) return
-
-  try {
-    const SQL = await initSqlJs({
+async function getSqlModule() {
+  if (!sqlModule) {
+    sqlModule = await initSqlJs({
       locateFile: (file: string) => {
         return path.resolve(process.cwd(), `node_modules/sql.js/dist/${file}`)
       }
     })
-
-    // Load courses database
-    if (fs.existsSync(DB_PATHS.courses)) {
-      coursesDb = new SQL.Database(fs.readFileSync(DB_PATHS.courses))
-    } else {
-      coursesDb = new SQL.Database()
-    }
-
-    // Load workflows database
-    if (fs.existsSync(DB_PATHS.workflows)) {
-      workflowsDb = new SQL.Database(fs.readFileSync(DB_PATHS.workflows))
-    } else {
-      workflowsDb = new SQL.Database()
-    }
-
-    // Load engmastery database
-    if (fs.existsSync(DB_PATHS.engmastery)) {
-      engmasteryDb = new SQL.Database(fs.readFileSync(DB_PATHS.engmastery))
-    } else {
-      engmasteryDb = new SQL.Database()
-    }
-
-    initialized = true
-    console.log('✅ sql.js databases initialized (courses, workflows, engmastery)')
-  } catch (error) {
-    console.error('❌ Failed to initialize sql.js databases:', error)
-    throw error
   }
+  return sqlModule
 }
 
 /**
- * Save databases to disk
+ * Load a database from file
+ */
+async function loadDb(dbPath: string): Promise<SqlJsDatabase> {
+  const SQL = await getSqlModule()
+  if (fs.existsSync(dbPath)) {
+    const buffer = fs.readFileSync(dbPath)
+    return new SQL.Database(buffer)
+  }
+  return new SQL.Database()
+}
+
+/**
+ * Initialize (just loads the sql.js WASM module)
+ */
+export async function initDatabase(): Promise<void> {
+  await getSqlModule()
+  console.log('✅ sql.js module ready (databases load on demand)')
+}
+
+/**
+ * Save databases to disk (only if loaded and modified)
  */
 export function saveDatabases(): void {
   try {
@@ -84,19 +76,25 @@ export function saveDatabases(): void {
   }
 }
 
-// Database getters
-export function getCoursesDb(): SqlJsDatabase {
-  if (!coursesDb) throw new Error('Courses database not initialized. Call initDatabase() first.')
+// Database getters (cached lazy-load)
+export async function getCoursesDb(): Promise<SqlJsDatabase> {
+  if (!coursesDb) {
+    coursesDb = await loadDb(DB_PATHS.courses)
+  }
   return coursesDb
 }
 
-export function getWorkflowsDb(): SqlJsDatabase {
-  if (!workflowsDb) throw new Error('Workflows database not initialized. Call initDatabase() first.')
+export async function getWorkflowsDb(): Promise<SqlJsDatabase> {
+  if (!workflowsDb) {
+    workflowsDb = await loadDb(DB_PATHS.workflows)
+  }
   return workflowsDb
 }
 
-export function getEngmasteryDb(): SqlJsDatabase {
-  if (!engmasteryDb) throw new Error('Engmastery database not initialized. Call initDatabase() first.')
+export async function getEngmasteryDb(): Promise<SqlJsDatabase> {
+  if (!engmasteryDb) {
+    engmasteryDb = await loadDb(DB_PATHS.engmastery)
+  }
   return engmasteryDb
 }
 
@@ -140,47 +138,43 @@ export function execute(db: SqlJsDatabase, sql: string, params: unknown[] = []):
 }
 
 /**
- * Database Service class - convenience wrapper
+ * Database Service class - async convenience wrapper
  */
 class DatabaseService {
-  // Courses database queries
-  queryCourses<T = Record<string, unknown>>(sql: string, params: unknown[] = []): T[] {
-    return query<T>(getCoursesDb(), sql, params)
+  async queryCourses<T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T[]> {
+    return query<T>(await getCoursesDb(), sql, params)
   }
 
-  queryOneCourse<T = Record<string, unknown>>(sql: string, params: unknown[] = []): T | undefined {
-    return queryOne<T>(getCoursesDb(), sql, params)
+  async queryOneCourse<T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T | undefined> {
+    return queryOne<T>(await getCoursesDb(), sql, params)
   }
 
-  // Workflows database queries
-  queryWorkflows<T = Record<string, unknown>>(sql: string, params: unknown[] = []): T[] {
-    return query<T>(getWorkflowsDb(), sql, params)
+  async queryWorkflows<T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T[]> {
+    return query<T>(await getWorkflowsDb(), sql, params)
   }
 
-  queryOneWorkflow<T = Record<string, unknown>>(sql: string, params: unknown[] = []): T | undefined {
-    return queryOne<T>(getWorkflowsDb(), sql, params)
+  async queryOneWorkflow<T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T | undefined> {
+    return queryOne<T>(await getWorkflowsDb(), sql, params)
   }
 
-  // Engmastery database queries
-  queryEngmastery<T = Record<string, unknown>>(sql: string, params: unknown[] = []): T[] {
-    return query<T>(getEngmasteryDb(), sql, params)
+  async queryEngmastery<T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T[]> {
+    return query<T>(await getEngmasteryDb(), sql, params)
   }
 
-  queryOneEngmastery<T = Record<string, unknown>>(sql: string, params: unknown[] = []): T | undefined {
-    return queryOne<T>(getEngmasteryDb(), sql, params)
+  async queryOneEngmastery<T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T | undefined> {
+    return queryOne<T>(await getEngmasteryDb(), sql, params)
   }
 
-  // Execute on specific databases
-  executeWorkflows(sql: string, params: unknown[] = []) {
-    return execute(getWorkflowsDb(), sql, params)
+  async executeWorkflows(sql: string, params: unknown[] = []) {
+    return execute(await getWorkflowsDb(), sql, params)
   }
 
-  executeCourses(sql: string, params: unknown[] = []) {
-    return execute(getCoursesDb(), sql, params)
+  async executeCourses(sql: string, params: unknown[] = []) {
+    return execute(await getCoursesDb(), sql, params)
   }
 
-  executeEngmastery(sql: string, params: unknown[] = []) {
-    return execute(getEngmasteryDb(), sql, params)
+  async executeEngmastery(sql: string, params: unknown[] = []) {
+    return execute(await getEngmasteryDb(), sql, params)
   }
 }
 
@@ -195,11 +189,9 @@ export function getDatabaseService(): DatabaseService {
 }
 
 /**
- * Ensure database is initialized before use (auto-init)
+ * Ensure database is initialized before use
  */
 export async function ensureDatabase(): Promise<DatabaseService> {
-  if (!initialized) {
-    await initDatabase()
-  }
+  await getSqlModule()
   return getDatabaseService()
 }

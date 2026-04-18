@@ -22,36 +22,36 @@ export async function GET(request: NextRequest) {
     }
 
     sql += ` ORDER BY c.id`
-    const courses = db.queryEngmastery(sql, params)
+    const courses = await db.queryEngmastery(sql, params)
 
     // Enrich each course with module/lesson counts and full hierarchy
-    const coursesWithStats = courses.map(course => {
+    const coursesWithStats = await Promise.all(courses.map(async course => {
       const c = course as Record<string, unknown>
       const courseId = c.id as string
 
       // Get modules
-      const modules = db.queryEngmastery<Record<string, unknown>>(
+      const modules = await db.queryEngmastery<Record<string, unknown>>(
         'SELECT * FROM modules WHERE course_id = ? ORDER BY order_index',
         [courseId]
       )
 
       // Count lessons across all modules
       let totalLessons = 0
-      const modulesWithLessons = modules.map(mod => {
-        const chapters = db.queryEngmastery<Record<string, unknown>>(
+      const modulesWithLessons = await Promise.all(modules.map(async mod => {
+        const chapters = await db.queryEngmastery<Record<string, unknown>>(
           'SELECT * FROM chapters WHERE module_id = ? ORDER BY order_index',
           [mod.id as string]
         )
 
         let moduleLessonCount = 0
-        const chaptersWithLessons = chapters.map(ch => {
-          const lessons = db.queryEngmastery<Record<string, unknown>>(
+        const chaptersWithLessons = await Promise.all(chapters.map(async ch => {
+          const lessons = await db.queryEngmastery<Record<string, unknown>>(
             'SELECT * FROM lessons WHERE chapter_id = ? ORDER BY order_index',
             [ch.id as string]
           )
           moduleLessonCount += lessons.length
           return { ...ch, lessons }
-        })
+        }))
 
         totalLessons += moduleLessonCount
         return {
@@ -59,7 +59,7 @@ export async function GET(request: NextRequest) {
           chapters: chaptersWithLessons,
           lesson_count: moduleLessonCount,
         }
-      })
+      }))
 
       return {
         ...c,
@@ -67,7 +67,7 @@ export async function GET(request: NextRequest) {
         lesson_count: totalLessons,
         modules: modulesWithLessons,
       }
-    })
+    }))
 
     return NextResponse.json({ success: true, data: coursesWithStats })
   } catch (error) {
