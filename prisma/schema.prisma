@@ -194,3 +194,17 @@ model UnitConversion {
   fromSymbol String?
   toSymbol   String?
 }
+
+model EngineeringReferenceData {
+  id          String  @id @default(cuid())
+  category    String  // e.g. "cable_impedance", "xlpe_library", "motor_ratings", "busbar_derating"
+  subCategory String? // e.g. "PVC", "XLPE", "K1", "K2"
+  key         String  // unique key within category (e.g. "16", "copper", "A")
+  label       String? // human-readable label
+  value       String  // JSON string with all data fields
+  unit        String? // unit of measurement
+  standard    String? // reference standard (e.g. "IEC 60364-5-52")
+  order       Int     @default(0)
+
+  @@unique([category, subCategory, key])
+}

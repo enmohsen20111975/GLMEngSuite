@@ -354,12 +354,16 @@ export function PipelinesSection() {
   useEffect(() => {
     if (!selectedId) return
 
-    setLoadingDetail(true)
-    setDetailError(null)
+    let cancelled = false
 
-    fetch(`/api/pipelines/${selectedId}`)
-      .then(r => r.json())
-      .then(d => {
+    async function loadDetail() {
+      setLoadingDetail(true)
+      setDetailError(null)
+
+      try {
+        const r = await fetch(`/api/pipelines/${selectedId}`)
+        const d = await r.json()
+        if (cancelled) return
         if (d.success && d.data) {
           setPipelineDetail(d.data)
           const steps = resolveSteps(d.data.steps || [])
@@ -369,23 +373,31 @@ export function PipelinesSection() {
           setPipelineDetail(null)
           setResolvedSteps([])
         }
-      })
-      .catch(err => {
+      } catch {
+        if (cancelled) return
         setDetailError('Failed to load pipeline')
         setPipelineDetail(null)
         setResolvedSteps([])
-      })
-      .finally(() => setLoadingDetail(false))
+      } finally {
+        if (!cancelled) setLoadingDetail(false)
+      }
+    }
+
+    loadDetail()
+    return () => { cancelled = true }
   }, [selectedId])
 
   // Reset step state when pipeline changes
   useEffect(() => {
-    setCurrentStep(0)
-    setStepValues({})
-    setStepAutoCalc({})
-    setStepErrors({})
-    setStepResults([])
-    setLastEdited(null)
+    // Using requestAnimationFrame to avoid synchronous setState in effect
+    requestAnimationFrame(() => {
+      setCurrentStep(0)
+      setStepValues({})
+      setStepAutoCalc({})
+      setStepErrors({})
+      setStepResults([])
+      setLastEdited(null)
+    })
   }, [selectedId])
 
   // ─── Get current step values (with defaults) ──────────────────────────────
@@ -407,25 +419,6 @@ export function PipelinesSection() {
     }
     return defaults
   }, [resolvedSteps, stepValues])
-
-  // ─── Auto-calculate with debounce ─────────────────────────────────────────
-  const triggerAutoCalc = useCallback((stepIdx: number, values: Record<string, string>, editedVar: string) => {
-    const step = resolvedSteps[stepIdx]
-    if (!step) return
-
-    if (debounceRef.current) clearTimeout(debounceRef.current)
-
-    debounceRef.current = setTimeout(() => {
-      const { values: newValues, autoCalculated, error } = solveStep(step, values, editedVar)
-
-      setStepValues(prev => ({ ...prev, [stepIdx]: newValues }))
-      setStepAutoCalc(prev => ({ ...prev, [stepIdx]: autoCalculated }))
-      setStepErrors(prev => ({ ...prev, [stepIdx]: error }))
-
-      // Propagate outputs to subsequent steps
-      propagateOutputs(stepIdx, newValues)
-    }, 300)
-  }, [resolvedSteps])
 
   // ─── Propagate outputs to subsequent steps ────────────────────────────────
   const propagateOutputs = useCallback((fromStepIdx: number, values: Record<string, string>) => {
@@ -461,6 +454,25 @@ export function PipelinesSection() {
       return updated
     })
   }, [resolvedSteps])
+
+  // ─── Auto-calculate with debounce ─────────────────────────────────────────
+  const triggerAutoCalc = useCallback((stepIdx: number, values: Record<string, string>, editedVar: string) => {
+    const step = resolvedSteps[stepIdx]
+    if (!step) return
+
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+
+    debounceRef.current = setTimeout(() => {
+      const { values: newValues, autoCalculated, error } = solveStep(step, values, editedVar)
+
+      setStepValues(prev => ({ ...prev, [stepIdx]: newValues }))
+      setStepAutoCalc(prev => ({ ...prev, [stepIdx]: autoCalculated }))
+      setStepErrors(prev => ({ ...prev, [stepIdx]: error }))
+
+      // Propagate outputs to subsequent steps
+      propagateOutputs(stepIdx, newValues)
+    }, 300)
+  }, [resolvedSteps, propagateOutputs])
 
   // ─── Handle value change ──────────────────────────────────────────────────
   const handleValueChange = (stepIdx: number, varName: string, value: string) => {

@@ -1,6 +1,18 @@
 // Engineering Pipeline Definitions — Local Data (no DB dependency)
 // Each pipeline is a sequence of steps where outputs of step N feed into inputs of step N+1
 
+import { lookupCableImpedance } from '@/lib/engineering/cable-data';
+import {
+  lookupBusbarDerating,
+  BUSBAR_MATERIALS,
+  lookupCU,
+  lookupMotorCode,
+  selectCableSize as selectCableSizeFromLib,
+  lookupCableAmpacity,
+  lookupTransformerImpedance,
+  selectMCCBSize,
+} from '@/lib/engineering/electrical-data';
+
 export interface PipelineInput {
   name: string;        // field key (snake_case)
   label: string;       // human-readable label
@@ -737,6 +749,1210 @@ const hvacCoolingLoad: EngineeringPipeline = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Pipeline 5: Voltage Drop Calculator
+// ─────────────────────────────────────────────────────────────────────────────
+
+const voltageDropCalculator: EngineeringPipeline = {
+  id: 'voltage-drop-calculator',
+  name: 'Voltage Drop Calculator',
+  description: 'Calculate voltage drop for cable runs considering conductor type, insulation, starting and running conditions per IEC 60364-5-52. Evaluates both starting and running voltage drop with compliance checks.',
+  domain: 'electrical',
+  difficulty: 'intermediate',
+  estimated_time: '8-12 min',
+  icon: '📉',
+  steps: [
+    {
+      stepNumber: 1,
+      name: 'Cable Route Data',
+      description: 'Define the cable route parameters including length, number of parallel cables, cable size, conductor material, and insulation type. These parameters determine the cable impedance used in voltage drop calculations.',
+      standard_ref: 'IEC 60364-5-52',
+      formula_display: [
+        'Total length = length_m × noOfCablesPerRun',
+        'R, X from cable impedance tables (Ω/km)',
+        'R depends on conductor type (CU/ALU) and insulation (PVC/XLPE)',
+      ],
+      inputs: [
+        { name: 'cableFrom', label: 'Cable From', unit: '', type: 'number', min: 0, max: 9999, default: 1, required: true, help: 'Source location identifier for the cable run' },
+        { name: 'cableTo', label: 'Cable To', unit: '', type: 'number', min: 0, max: 9999, default: 2, required: true, help: 'Destination location identifier for the cable run' },
+        { name: 'length_m', label: 'Cable Length', unit: 'm', type: 'number', min: 1, max: 5000, default: 80, required: true, help: 'One-way cable route length in meters' },
+        { name: 'noOfCablesPerRun', label: 'No. of Cables Per Run', unit: '', type: 'number', min: 1, max: 10, default: 1, required: true, help: 'Number of parallel cables per phase (increases current capacity, reduces effective impedance)' },
+        { name: 'cableSize_mm2', label: 'Cable Size', unit: 'mm²', type: 'select', options: [
+          { value: 16, label: '16 mm²' }, { value: 25, label: '25 mm²' }, { value: 35, label: '35 mm²' },
+          { value: 50, label: '50 mm²' }, { value: 70, label: '70 mm²' }, { value: 95, label: '95 mm²' },
+          { value: 120, label: '120 mm²' }, { value: 150, label: '150 mm²' }, { value: 185, label: '185 mm²' },
+          { value: 240, label: '240 mm²' }, { value: 300, label: '300 mm²' }, { value: 400, label: '400 mm²' },
+        ], default: 70, required: true, help: 'Cross-sectional area of each cable conductor per phase' },
+        { name: 'conductorType', label: 'Conductor Type', unit: '', type: 'select', options: [
+          { value: 'CU', label: 'Copper (CU)' }, { value: 'ALU', label: 'Aluminum (ALU)' },
+        ], default: 'CU', required: true, help: 'Conductor material — copper has lower resistance per unit area but is more expensive' },
+        { name: 'insulationType', label: 'Insulation Type', unit: '', type: 'select', options: [
+          { value: 'PVC', label: 'PVC (70°C max)' }, { value: 'XLPE', label: 'XLPE (90°C max)' },
+        ], default: 'PVC', required: true, help: 'Cable insulation material — affects maximum operating temperature and resistance' },
+      ],
+      outputs: [
+        { name: 'totalLength_m', label: 'Total Cable Length', unit: 'm', precision: 1 },
+        { name: 'R_ohm_km', label: 'Resistance (R)', unit: 'Ω/km', precision: 4 },
+        { name: 'X_ohm_km', label: 'Reactance (X)', unit: 'Ω/km', precision: 4 },
+      ],
+      calculate(inp) {
+        const len = Number(inp.length_m);
+        const nCables = Math.max(Number(inp.noOfCablesPerRun), 1);
+        const size = Number(inp.cableSize_mm2);
+        const condType = String(inp.conductorType) as 'ALU' | 'CU';
+        const insType = String(inp.insulationType) as 'PVC' | 'XLPE';
+
+        const impedance = lookupCableImpedance(size, condType, insType);
+
+        return {
+          totalLength_m: Math.round(len * nCables * 10) / 10,
+          R_ohm_km: Math.round(impedance.R * 10000) / 10000,
+          X_ohm_km: Math.round(impedance.X * 10000) / 10000,
+        };
+      }
+    },
+    {
+      stepNumber: 2,
+      name: 'Load Data',
+      description: 'Enter the supply voltage and load characteristics including lighting and motor loads. Starting power factor is used for motor starting voltage drop, and running power factor for steady-state operation.',
+      standard_ref: 'IEC 60364-5-52',
+      formula_display: [
+        'Total load = lightingLoad_kW + motorLoad_kW',
+        'Motor starting current = motorLoad_kW × lockRotorMultiplier / (efficiency × PF)',
+        'Full load current (FLC) = motorLoad_kW / (√3 × V × PF × η)',
+        'Starting current = FLC × lockRotorMultiplier',
+      ],
+      inputs: [
+        { name: 'supplyVoltage_V', label: 'Supply Voltage (L-L)', unit: 'V', type: 'number', min: 100, max: 1000, default: 433, required: true, help: 'Line-to-line supply voltage at the source (433V typical for 380V systems at transformer)' },
+        { name: 'startingPF', label: 'Starting Power Factor', unit: '', type: 'number', min: 0.1, max: 0.8, default: 0.6, required: true, help: 'Power factor during motor starting (typically 0.2–0.6, lower for larger motors)' },
+        { name: 'runningPF', label: 'Running Power Factor', unit: '', type: 'number', min: 0.5, max: 1.0, default: 0.85, required: true, help: 'Power factor during normal running condition' },
+        { name: 'lightingLoad_kW', label: 'Lighting Load', unit: 'kW', type: 'number', min: 0, max: 1000, default: 5, required: true, help: 'Connected lighting load in kW (resistive, PF ≈ 1.0)' },
+        { name: 'motorLoad_kW', label: 'Motor Load', unit: 'kW', type: 'number', min: 0, max: 1000, default: 15, required: true, help: 'Connected motor load in kW (inductive, affects starting current)' },
+        { name: 'motorLockRotorMultiplier', label: 'Motor Lock Rotor Multiplier', unit: '', type: 'number', min: 1, max: 8, default: 3, required: true, help: 'Ratio of starting current to full-load current (DOL: 5–8, Star-Delta: 1.7–3, VFD: 1.0–1.5)' },
+      ],
+      outputs: [
+        { name: 'totalLoad_kW', label: 'Total Connected Load', unit: 'kW', precision: 2 },
+        { name: 'lightingCurrent_A', label: 'Lighting Current', unit: 'A', precision: 2 },
+        { name: 'motorFLC_A', label: 'Motor Full-Load Current', unit: 'A', precision: 2 },
+        { name: 'motorStartingCurrent_A', label: 'Motor Starting Current', unit: 'A', precision: 2 },
+        { name: 'totalStartingCurrent_A', label: 'Total Starting Current', unit: 'A', precision: 2 },
+        { name: 'totalRunningCurrent_A', label: 'Total Running Current', unit: 'A', precision: 2 },
+      ],
+      calculate(inp) {
+        const V = Number(inp.supplyVoltage_V);
+        const startPF = Number(inp.startingPF);
+        const runPF = Number(inp.runningPF);
+        const lighting = Number(inp.lightingLoad_kW);
+        const motor = Number(inp.motorLoad_kW);
+        const lrMultiplier = Number(inp.motorLockRotorMultiplier);
+
+        const totalLoad = lighting + motor;
+
+        // Lighting current (assume PF=1, 3-phase)
+        const lightingI = (lighting * 1000) / (Math.sqrt(3) * V);
+
+        // Motor full-load current (assume efficiency ≈ 0.9 if not given)
+        const motorEff = 0.9;
+        const motorFLC = (motor * 1000) / (Math.sqrt(3) * V * runPF * motorEff);
+
+        // Motor starting current
+        const motorStartingI = motorFLC * lrMultiplier;
+
+        // Total currents
+        const totalStarting = lightingI + motorStartingI;
+        const totalRunning = lightingI + motorFLC;
+
+        return {
+          totalLoad_kW: Math.round(totalLoad * 100) / 100,
+          lightingCurrent_A: Math.round(lightingI * 100) / 100,
+          motorFLC_A: Math.round(motorFLC * 100) / 100,
+          motorStartingCurrent_A: Math.round(motorStartingI * 100) / 100,
+          totalStartingCurrent_A: Math.round(totalStarting * 100) / 100,
+          totalRunningCurrent_A: Math.round(totalRunning * 100) / 100,
+        };
+      }
+    },
+    {
+      stepNumber: 3,
+      name: 'Voltage Drop Results',
+      description: 'Calculate voltage drop under both starting and running conditions, determine % regulation, and verify compliance with IEC 60364-5-52 limits (≤ 3% running, ≤ 5% starting).',
+      standard_ref: 'IEC 60364-5-52 § 525',
+      formula_display: [
+        'VD = √3 × I × L × (R·cosφ + X·sinφ) / (cables × 1000)',
+        'VD% = (VD / V_supply) × 100',
+        '% Regulation = VD% at running condition',
+        'Compliance: VD_running ≤ 3%, VD_starting ≤ 5%',
+      ],
+      inputs: [
+        { name: 'totalLength_m', label: 'Total Cable Length', unit: 'm', type: 'number', min: 1, max: 5000, required: true, help: 'Total cable length from Step 1', fromPreviousStep: 'totalLength_m' },
+        { name: 'R_ohm_km', label: 'Cable Resistance (R)', unit: 'Ω/km', type: 'number', min: 0, max: 10, required: true, help: 'Cable resistance from Step 1', fromPreviousStep: 'R_ohm_km' },
+        { name: 'X_ohm_km', label: 'Cable Reactance (X)', unit: 'Ω/km', type: 'number', min: 0, max: 1, required: true, help: 'Cable reactance from Step 1', fromPreviousStep: 'X_ohm_km' },
+        { name: 'noOfCablesPerRun', label: 'No. of Cables Per Run', unit: '', type: 'number', min: 1, max: 10, default: 1, required: true, help: 'Number of parallel cables per phase' },
+        { name: 'supplyVoltage_V', label: 'Supply Voltage (L-L)', unit: 'V', type: 'number', min: 100, max: 1000, default: 433, required: true, help: 'Supply voltage' },
+        { name: 'totalStartingCurrent_A', label: 'Total Starting Current', unit: 'A', type: 'number', min: 0, max: 10000, required: true, help: 'Total starting current from Step 2', fromPreviousStep: 'totalStartingCurrent_A' },
+        { name: 'totalRunningCurrent_A', label: 'Total Running Current', unit: 'A', type: 'number', min: 0, max: 10000, required: true, help: 'Total running current from Step 2', fromPreviousStep: 'totalRunningCurrent_A' },
+        { name: 'startingPF', label: 'Starting Power Factor', unit: '', type: 'number', min: 0.1, max: 0.8, default: 0.6, required: true, help: 'Power factor during starting' },
+        { name: 'runningPF', label: 'Running Power Factor', unit: '', type: 'number', min: 0.5, max: 1.0, default: 0.85, required: true, help: 'Power factor during running' },
+      ],
+      outputs: [
+        { name: 'vd_starting_V', label: 'Voltage Drop (Starting)', unit: 'V', precision: 2 },
+        { name: 'vd_starting_pct', label: 'Voltage Drop % (Starting)', unit: '%', precision: 2 },
+        { name: 'vd_running_V', label: 'Voltage Drop (Running)', unit: 'V', precision: 2 },
+        { name: 'vd_running_pct', label: 'Voltage Drop % (Running)', unit: '%', precision: 2 },
+        { name: 'regulation_pct', label: '% Regulation', unit: '%', precision: 2 },
+        { name: 'running_compliant', label: 'Running VD ≤ 3%', unit: '', precision: 0, isCompliance: true },
+        { name: 'starting_compliant', label: 'Starting VD ≤ 5%', unit: '', precision: 0, isCompliance: true },
+      ],
+      calculate(inp) {
+        const L = Number(inp.totalLength_m);
+        const R = Number(inp.R_ohm_km);
+        const X = Number(inp.X_ohm_km);
+        const nCables = Math.max(Number(inp.noOfCablesPerRun), 1);
+        const V = Number(inp.supplyVoltage_V);
+        const Istart = Number(inp.totalStartingCurrent_A);
+        const Irun = Number(inp.totalRunningCurrent_A);
+        const pfStart = Number(inp.startingPF);
+        const pfRun = Number(inp.runningPF);
+
+        const sinStart = Math.sqrt(1 - pfStart * pfStart);
+        const sinRun = Math.sqrt(1 - pfRun * pfRun);
+
+        // Voltage drop: VD = √3 × I × L × (R·cosφ + X·sinφ) / (cables × 1000)
+        const vdStartV = (Math.sqrt(3) * Istart * L * (R * pfStart + X * sinStart)) / (nCables * 1000);
+        const vdRunV = (Math.sqrt(3) * Irun * L * (R * pfRun + X * sinRun)) / (nCables * 1000);
+
+        const vdStartPct = (vdStartV / V) * 100;
+        const vdRunPct = (vdRunV / V) * 100;
+
+        return {
+          vd_starting_V: Math.round(vdStartV * 100) / 100,
+          vd_starting_pct: Math.round(vdStartPct * 100) / 100,
+          vd_running_V: Math.round(vdRunV * 100) / 100,
+          vd_running_pct: Math.round(vdRunPct * 100) / 100,
+          regulation_pct: Math.round(vdRunPct * 100) / 100,
+          running_compliant: vdRunPct <= 3.0,
+          starting_compliant: vdStartPct <= 5.0,
+        };
+      }
+    }
+  ]
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pipeline 6: Busbar Sizing
+// ─────────────────────────────────────────────────────────────────────────────
+
+const busbarSizing: EngineeringPipeline = {
+  id: 'busbar-sizing',
+  name: 'Busbar Sizing',
+  description: 'Size busbar systems per IEC 60890 and Egyptian Code: determine derating factors for installation conditions, calculate required cross-section for both continuous current and short-circuit withstand, and verify compliance.',
+  domain: 'electrical',
+  difficulty: 'advanced',
+  estimated_time: '12-18 min',
+  icon: '🔲',
+  steps: [
+    {
+      stepNumber: 1,
+      name: 'Busbar Parameters',
+      description: 'Define the busbar system electrical requirements: desired continuous current rating, prospective fault current, fault duration, and temperature limits. These determine the minimum cross-section for both normal and fault conditions.',
+      standard_ref: 'IEC 60890 / Egyptian Code',
+      formula_display: [
+        'Desired current rating (continuous)',
+        'Fault current and duration for short-circuit sizing',
+        'Operating and final fault temperatures for material k factor',
+        'Busbar material: copper or aluminum',
+      ],
+      inputs: [
+        { name: 'desiredCurrent_A', label: 'Desired Current Rating', unit: 'A', type: 'number', min: 50, max: 6300, default: 630, required: true, help: 'Continuous current the busbar must carry under normal operating conditions' },
+        { name: 'faultCurrent_kA', label: 'Prospective Fault Current', unit: 'kA', type: 'number', min: 1, max: 100, default: 50, required: true, help: 'Maximum prospective short-circuit current at the busbar location' },
+        { name: 'faultDuration_s', label: 'Fault Duration', unit: 's', type: 'number', min: 0.1, max: 5, default: 1, required: true, help: 'Duration of short-circuit (typically 1s for main busbars, 0.4s for sub-busbars)' },
+        { name: 'operatingTemp_C', label: 'Operating Temperature', unit: '°C', type: 'number', min: 30, max: 120, default: 85, required: true, help: 'Maximum continuous operating temperature of the busbar' },
+        { name: 'finalFaultTemp_C', label: 'Final Fault Temperature', unit: '°C', type: 'number', min: 100, max: 300, default: 185, required: true, help: 'Maximum temperature during short-circuit (Cu: 185°C bare, 250°C plated)' },
+        { name: 'ambientTemp_C', label: 'Ambient Temperature', unit: '°C', type: 'number', min: 20, max: 60, default: 50, required: true, help: 'Maximum ambient temperature around the busbar enclosure' },
+        { name: 'busbarMaterial', label: 'Busbar Material', unit: '', type: 'select', options: [
+          { value: 'copper', label: 'Copper' }, { value: 'aluminum', label: 'Aluminum' },
+        ], default: 'copper', required: true, help: 'Busbar conductor material — copper has higher conductivity and short-circuit withstand' },
+      ],
+      outputs: [
+        { name: 'material_conductivity', label: 'Material Conductivity', unit: '% IACS', precision: 0 },
+        { name: 'material_k_factor', label: 'Short-Circuit k Factor', unit: '', precision: 0 },
+        { name: 'ambientDerating', label: 'Ambient Temp Derating', unit: '', precision: 3 },
+      ],
+      calculate(inp) {
+        const material = String(inp.busbarMaterial);
+        const ambientTemp = Number(inp.ambientTemp_C);
+        const operatingTemp = Number(inp.operatingTemp_C);
+
+        const matData = BUSBAR_MATERIALS[material] ?? BUSBAR_MATERIALS['copper'];
+
+        // Ambient temperature derating: (θ_max - θ_amb) / (θ_max - 40)
+        // Reference ambient is 40°C per IEC
+        const ambientDerating = (operatingTemp - ambientTemp) / (operatingTemp - 40);
+
+        return {
+          material_conductivity: matData.conductivity,
+          material_k_factor: matData.k_factor,
+          ambientDerating: Math.round(ambientDerating * 1000) / 1000,
+        };
+      }
+    },
+    {
+      stepNumber: 2,
+      name: 'Derating Factors',
+      description: 'Apply all derating factors for the busbar installation environment per IEC 60890 and Egyptian Code. These factors account for enclosure, ventilation, proximity, altitude, and other installation-specific conditions.',
+      standard_ref: 'IEC 60890 / Egyptian Code',
+      formula_display: [
+        'K_total = K1 × K2 × K3 × K4 × K5 × K6 × K7 × K8',
+        'K1 = enclosure area ratio factor',
+        'K2 = insulating material factor',
+        'K3 = busbar position factor',
+        'K4 = installation media factor',
+        'K5 = ventilation scheme factor',
+        'K6 = cross-section / enclosure factor',
+        'K7 = proximity bars factor',
+        'K8 = altitude correction factor',
+      ],
+      inputs: [
+        { name: 'k1_ea_ratio', label: 'K1: Enclosure/Busbar Area Ratio', unit: '', type: 'number', min: 0, max: 0.5, default: 0.12, required: true, help: 'Ratio of enclosure cross-section area to busbar cross-section area (0.12 typical)' },
+        { name: 'k1_strips', label: 'K1: Number of Strips', unit: '', type: 'number', min: 1, max: 4, default: 2, required: true, help: 'Number of conductor strips per phase (affects K1 and current distribution)' },
+        { name: 'k2_insulatingMaterial', label: 'K2: Insulating Material', unit: '', type: 'select', options: [
+          { value: 'Bare', label: 'Bare (1.00)' }, { value: 'PVC', label: 'PVC (0.85)' },
+          { value: 'Heat-shrink', label: 'Heat-shrink (0.90)' }, { value: 'Epoxy', label: 'Epoxy (0.88)' },
+        ], default: 'Bare', required: true, help: 'Insulation covering on the busbar (bare has highest rating)' },
+        { name: 'k3_position', label: 'K3: Busbar Position', unit: '', type: 'select', options: [
+          { value: 'Edge-mounted bars', label: 'Edge-mounted bars (1.00)' },
+          { value: 'Flat-mounted bars', label: 'Flat-mounted bars (0.92)' },
+          { value: 'Vertical bars', label: 'Vertical bars (0.95)' },
+        ], default: 'Edge-mounted bars', required: true, help: 'Orientation of busbar mounting within the enclosure' },
+        { name: 'k4_installationMedia', label: 'K4: Installation Media', unit: '', type: 'select', options: [
+          { value: 'Open air', label: 'Open air (1.00)' },
+          { value: 'Ventilated ducting', label: 'Ventilated ducting (0.90)' },
+          { value: 'Non-ventilated ducting', label: 'Non-ventilated ducting (0.78)' },
+        ], default: 'Non-ventilated ducting', required: true, help: 'Installation medium surrounding the busbar enclosure' },
+        { name: 'k5_ventilationScheme', label: 'K5: Ventilation Scheme', unit: '', type: 'select', options: [
+          { value: 'With artificial ventilation', label: 'With artificial ventilation (1.00)' },
+          { value: 'Without artificial ventilation', label: 'Without artificial ventilation (0.85)' },
+        ], default: 'Without artificial ventilation', required: true, help: 'Whether the enclosure has forced (artificial) ventilation' },
+        { name: 'k6_crossSectionRatio', label: 'K6: Cross-Section Ratio', unit: '', type: 'number', min: 0, max: 0.3, default: 0.05, required: true, help: 'Ratio of busbar cross-section to enclosure cross-section' },
+        { name: 'k6_enclosureType', label: 'K6: Enclosure Type', unit: '', type: 'select', options: [
+          { value: 'well', label: 'Well ventilated (0.95)' },
+          { value: 'poorly', label: 'Poorly ventilated (0.85)' },
+        ], default: 'well', required: true, help: 'Quality of enclosure ventilation' },
+        { name: 'k7_proxyBars', label: 'K7: Proximity Busbar Systems', unit: '', type: 'number', min: 0, max: 4, default: 2, required: true, help: 'Number of nearby busbar systems that cause mutual heating' },
+        { name: 'k8_altitude_m', label: 'K8: Altitude', unit: 'm', type: 'number', min: 0, max: 5000, default: 2200, required: true, help: 'Installation altitude above sea level in meters (>1000m requires derating)' },
+      ],
+      outputs: [
+        { name: 'k1', label: 'K1 Factor', unit: '', precision: 3 },
+        { name: 'k2', label: 'K2 Factor', unit: '', precision: 3 },
+        { name: 'k3', label: 'K3 Factor', unit: '', precision: 3 },
+        { name: 'k4', label: 'K4 Factor', unit: '', precision: 3 },
+        { name: 'k5', label: 'K5 Factor', unit: '', precision: 3 },
+        { name: 'k6', label: 'K6 Factor', unit: '', precision: 3 },
+        { name: 'k7', label: 'K7 Factor', unit: '', precision: 3 },
+        { name: 'k8', label: 'K8 Factor', unit: '', precision: 3 },
+        { name: 'totalDeratingFactor', label: 'Total Derating Factor (K_total)', unit: '', precision: 4 },
+      ],
+      calculate(inp) {
+        const factors = lookupBusbarDerating({
+          k1_ea_ratio: Number(inp.k1_ea_ratio),
+          k1_strips: Number(inp.k1_strips),
+          k2_insulatingMaterial: String(inp.k2_insulatingMaterial),
+          k3_position: String(inp.k3_position),
+          k4_installationMedia: String(inp.k4_installationMedia),
+          k5_ventilationScheme: String(inp.k5_ventilationScheme),
+          k6_crossSectionRatio: Number(inp.k6_crossSectionRatio),
+          k6_enclosureType: String(inp.k6_enclosureType),
+          k7_proxyBars: Number(inp.k7_proxyBars),
+          k8_altitude_m: Number(inp.k8_altitude_m),
+        });
+
+        const total = factors.k1 * factors.k2 * factors.k3 * factors.k4 * factors.k5 * factors.k6 * factors.k7 * factors.k8;
+
+        return {
+          k1: Math.round(factors.k1 * 1000) / 1000,
+          k2: Math.round(factors.k2 * 1000) / 1000,
+          k3: Math.round(factors.k3 * 1000) / 1000,
+          k4: Math.round(factors.k4 * 1000) / 1000,
+          k5: Math.round(factors.k5 * 1000) / 1000,
+          k6: Math.round(factors.k6 * 1000) / 1000,
+          k7: Math.round(factors.k7 * 1000) / 1000,
+          k8: Math.round(factors.k8 * 1000) / 1000,
+          totalDeratingFactor: Math.round(total * 10000) / 10000,
+        };
+      }
+    },
+    {
+      stepNumber: 3,
+      name: 'Busbar Results',
+      description: 'Calculate the required busbar cross-section for both continuous current and short-circuit withstand, select the final cross-section, and verify compliance with all criteria.',
+      standard_ref: 'IEC 60890 / Egyptian Code',
+      formula_display: [
+        'I_derated = I_desired / K_total',
+        'CS_current = I_derated / baseRating_per_mm²',
+        'CS_SC = (I_fault × √t) / k_factor',
+        'CS_final = max(CS_current, CS_SC)',
+        'Compliance: I_rated ≥ I_desired, CS ≥ CS_SC',
+      ],
+      inputs: [
+        { name: 'desiredCurrent_A', label: 'Desired Current', unit: 'A', type: 'number', min: 50, max: 6300, default: 630, required: true, help: 'Desired current rating from Step 1' },
+        { name: 'totalDeratingFactor', label: 'Total Derating Factor', unit: '', type: 'number', min: 0.1, max: 1, required: true, help: 'Total derating factor from Step 2', fromPreviousStep: 'totalDeratingFactor' },
+        { name: 'ambientDerating', label: 'Ambient Derating', unit: '', type: 'number', min: 0.5, max: 1.5, required: true, help: 'Ambient temperature derating from Step 1', fromPreviousStep: 'ambientDerating' },
+        { name: 'faultCurrent_kA', label: 'Fault Current', unit: 'kA', type: 'number', min: 1, max: 100, default: 50, required: true, help: 'Fault current from Step 1' },
+        { name: 'faultDuration_s', label: 'Fault Duration', unit: 's', type: 'number', min: 0.1, max: 5, default: 1, required: true, help: 'Fault duration from Step 1' },
+        { name: 'material_k_factor', label: 'Material k Factor', unit: '', type: 'number', min: 50, max: 200, default: 166, required: true, help: 'Short-circuit k factor from Step 1', fromPreviousStep: 'material_k_factor' },
+        { name: 'busbarMaterial', label: 'Busbar Material', unit: '', type: 'select', options: [
+          { value: 'copper', label: 'Copper' }, { value: 'aluminum', label: 'Aluminum' },
+        ], default: 'copper', required: true, help: 'Busbar material' },
+      ],
+      outputs: [
+        { name: 'currentAfterDerating_A', label: 'Current After Derating', unit: 'A', precision: 1 },
+        { name: 'cs_for_current_mm2', label: 'CS for Current', unit: 'mm²', precision: 0 },
+        { name: 'cs_for_SC_mm2', label: 'CS for Short-Circuit', unit: 'mm²', precision: 0 },
+        { name: 'finalCS_mm2', label: 'Final Required CS', unit: 'mm²', precision: 0 },
+        { name: 'busbarRatedCurrent_A', label: 'Busbar Rated Current', unit: 'A', precision: 1 },
+        { name: 'current_compliant', label: 'Current Rating Adequate', unit: '', precision: 0, isCompliance: true },
+        { name: 'sc_compliant', label: 'Short-Circuit Withstand Adequate', unit: '', precision: 0, isCompliance: true },
+      ],
+      calculate(inp) {
+        const desiredI = Number(inp.desiredCurrent_A);
+        const kTotal = Number(inp.totalDeratingFactor);
+        const kAmbient = Number(inp.ambientDerating);
+        const faultI_kA = Number(inp.faultCurrent_kA);
+        const faultT = Number(inp.faultDuration_s);
+        const kFactor = Number(inp.material_k_factor);
+        const material = String(inp.busbarMaterial);
+
+        const matData = BUSBAR_MATERIALS[material] ?? BUSBAR_MATERIALS['copper'];
+
+        // Current after derating
+        const combinedDerating = kTotal * kAmbient;
+        const currentAfterDerating = desiredI / combinedDerating;
+
+        // Cross-section for current
+        const csCurrent = currentAfterDerating / matData.baseRating_A_per_mm2;
+
+        // Cross-section for short-circuit: S = I × √t / k
+        const faultI_A = faultI_kA * 1000;
+        const csSC = (faultI_A * Math.sqrt(faultT)) / kFactor;
+
+        // Final cross-section is the larger
+        const finalCS = Math.max(csCurrent, csSC);
+
+        // Rated current of the busbar
+        const ratedCurrent = finalCS * matData.baseRating_A_per_mm2 * combinedDerating;
+
+        return {
+          currentAfterDerating_A: Math.round(currentAfterDerating * 10) / 10,
+          cs_for_current_mm2: Math.round(Math.ceil(csCurrent)),
+          cs_for_SC_mm2: Math.round(Math.ceil(csSC)),
+          finalCS_mm2: Math.round(Math.ceil(finalCS)),
+          busbarRatedCurrent_A: Math.round(ratedCurrent * 10) / 10,
+          current_compliant: ratedCurrent >= desiredI,
+          sc_compliant: finalCS >= csSC,
+        };
+      }
+    }
+  ]
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pipeline 7: Indoor Lighting Design
+// ─────────────────────────────────────────────────────────────────────────────
+
+const indoorLightingDesign: EngineeringPipeline = {
+  id: 'indoor-lighting-design',
+  name: 'Indoor Lighting Design',
+  description: 'Design indoor lighting using the Lumen (Utilization Factor) method per CIE/IESNA: calculate room index, coefficient of utilization, maintenance factor, and determine the required number of fixtures and their arrangement.',
+  domain: 'electrical',
+  difficulty: 'intermediate',
+  estimated_time: '8-12 min',
+  icon: '💡',
+  steps: [
+    {
+      stepNumber: 1,
+      name: 'Room & Illuminance Data',
+      description: 'Define the room dimensions, mounting height, working plane height, and the required illuminance level. These parameters determine the room index which affects the coefficient of utilization.',
+      standard_ref: 'CIE / IESNA',
+      formula_display: [
+        'Room Index (RI) = (L × W) / (Hm × (L + W))',
+        'Hm = mounting height − working plane height',
+        'Hm = room height − fixture hanging − working plane height',
+        'Required Lux per CIE/IESNA recommendations',
+      ],
+      inputs: [
+        { name: 'method', label: 'Calculation Method', unit: '', type: 'select', options: [
+          { value: 'lumen', label: 'Lumen Method (Utilization Factor)' },
+        ], default: 'lumen', required: true, help: 'Lighting calculation method — Lumen method is the standard for general indoor lighting' },
+        { name: 'roomLength_m', label: 'Room Length', unit: 'm', type: 'number', min: 1, max: 100, default: 7, required: true, help: 'Length of the room in meters' },
+        { name: 'roomWidth_m', label: 'Room Width', unit: 'm', type: 'number', min: 1, max: 100, default: 4, required: true, help: 'Width of the room in meters' },
+        { name: 'mountingHeight_m', label: 'Mounting Height', unit: 'm', type: 'number', min: 1, max: 20, default: 3, required: true, help: 'Height of the ceiling where fixtures will be mounted' },
+        { name: 'workingPlaneHeight_m', label: 'Working Plane Height', unit: 'm', type: 'number', min: 0, max: 5, default: 0, required: true, help: 'Height of the working plane (desk height ≈ 0.75m, floor = 0)' },
+        { name: 'fixtureHangingHeight_m', label: 'Fixture Hanging Length', unit: 'm', type: 'number', min: 0, max: 5, default: 0, required: true, help: 'Length of fixture suspension from ceiling (0 for surface-mounted)' },
+        { name: 'requiredLux', label: 'Required Illuminance', unit: 'lux', type: 'number', min: 50, max: 5000, default: 200, required: true, help: 'Target maintained illuminance (CIE: offices 300-500 lux, corridors 100 lux, workshops 500-750 lux)' },
+      ],
+      outputs: [
+        { name: 'hm_m', label: 'Effective Mounting Height (Hm)', unit: 'm', precision: 2 },
+        { name: 'roomIndex', label: 'Room Index (RI)', unit: '', precision: 2 },
+        { name: 'roomArea_m2', label: 'Room Area', unit: 'm²', precision: 2 },
+      ],
+      calculate(inp) {
+        const L = Number(inp.roomLength_m);
+        const W = Number(inp.roomWidth_m);
+        const mountH = Number(inp.mountingHeight_m);
+        const workH = Number(inp.workingPlaneHeight_m);
+        const hangH = Number(inp.fixtureHangingHeight_m);
+
+        const Hm = mountH - hangH - workH;
+        const RI = (L * W) / (Hm * (L + W));
+        const area = L * W;
+
+        return {
+          hm_m: Math.round(Math.max(Hm, 0.1) * 100) / 100,
+          roomIndex: Math.round(RI * 100) / 100,
+          roomArea_m2: Math.round(area * 100) / 100,
+        };
+      }
+    },
+    {
+      stepNumber: 2,
+      name: 'Fixture & Reflection Data',
+      description: 'Specify the luminaire characteristics (lamp flux, lamps per fixture) and room surface reflection coefficients. The ceiling and wall reflection values affect the utilization factor, and the maintenance condition determines the depreciation allowance.',
+      standard_ref: 'CIE / IESNA',
+      formula_display: [
+        'Lamp flux per fixture = lampFlux × lampsPerFixture',
+        'Ceiling reflection: 0.7 (white), 0.5 (light), 0.3 (medium)',
+        'Wall reflection: 0.5 (light), 0.3 (medium), 0.1 (dark)',
+        'Maintenance factor: good=0.85, average=0.77, poor=0.65',
+      ],
+      inputs: [
+        { name: 'lampFlux_lumen', label: 'Lamp Luminous Flux', unit: 'lm', type: 'number', min: 100, max: 50000, default: 1500, required: true, help: 'Luminous flux per lamp (LED panel: 1500-4000 lm, fluorescent: 2400-5200 lm)' },
+        { name: 'lampsPerFixture', label: 'Lamps Per Fixture', unit: '', type: 'number', min: 1, max: 20, default: 1, required: true, help: 'Number of lamps in each luminaire/fixture' },
+        { name: 'ceilingReflection', label: 'Ceiling Reflection', unit: '', type: 'select', options: [
+          { value: '0.7', label: '0.7 — White/light ceiling' },
+          { value: '0.5', label: '0.5 — Light ceiling' },
+          { value: '0.3', label: '0.3 — Medium/dark ceiling' },
+        ], default: '0.7', required: true, help: 'Reflectance of the ceiling surface (affects how much light bounces back to working plane)' },
+        { name: 'wallReflection', label: 'Wall Reflection', unit: '', type: 'select', options: [
+          { value: '0.5', label: '0.5 — Light walls' },
+          { value: '0.3', label: '0.3 — Medium walls' },
+          { value: '0.1', label: '0.1 — Dark walls' },
+        ], default: '0.5', required: true, help: 'Reflectance of the wall surfaces' },
+        { name: 'maintenanceCondition', label: 'Maintenance Condition', unit: '', type: 'select', options: [
+          { value: 'good', label: 'Good (MF = 0.85)' },
+          { value: 'average', label: 'Average (MF = 0.77)' },
+          { value: 'poor', label: 'Poor (MF = 0.65)' },
+        ], default: 'average', required: true, help: 'Expected maintenance level — good: regular cleaning, average: periodic, poor: rarely cleaned' },
+      ],
+      outputs: [
+        { name: 'fixtureFlux_lumen', label: 'Total Flux Per Fixture', unit: 'lm', precision: 0 },
+        { name: 'maintenanceFactor', label: 'Maintenance Factor', unit: '', precision: 2 },
+        { name: 'ceilingReflection_val', label: 'Ceiling Reflection', unit: '', precision: 1 },
+        { name: 'wallReflection_val', label: 'Wall Reflection', unit: '', precision: 1 },
+      ],
+      calculate(inp) {
+        const flux = Number(inp.lampFlux_lumen);
+        const lampsPerFix = Number(inp.lampsPerFixture);
+        const ceiliRef = Number(inp.ceilingReflection);
+        const wallRef = Number(inp.wallReflection);
+
+        const mfMap: Record<string, number> = { good: 0.85, average: 0.77, poor: 0.65 };
+        const mf = mfMap[String(inp.maintenanceCondition)] ?? 0.77;
+
+        return {
+          fixtureFlux_lumen: Math.round(flux * lampsPerFix),
+          maintenanceFactor: mf,
+          ceilingReflection_val: ceiliRef,
+          wallReflection_val: wallRef,
+        };
+      }
+    },
+    {
+      stepNumber: 3,
+      name: 'Lighting Results',
+      description: 'Calculate the coefficient of utilization from the room index and reflection values, determine the required number of fixtures, and propose a practical arrangement (rows × columns).',
+      standard_ref: 'CIE / IESNA',
+      formula_display: [
+        'N = (E_required × A) / (Φ_fixture × CU × MF)',
+        'CU = coefficient of utilization from lookup table',
+        'MF = maintenance factor',
+        'Fixture arrangement: rows × columns ≈ √N × √N',
+        'Actual Lux = N × Φ_fixture × CU × MF / A',
+      ],
+      inputs: [
+        { name: 'roomIndex', label: 'Room Index', unit: '', type: 'number', min: 0.1, max: 20, required: true, help: 'Room index from Step 1', fromPreviousStep: 'roomIndex' },
+        { name: 'roomArea_m2', label: 'Room Area', unit: 'm²', type: 'number', min: 1, max: 10000, required: true, help: 'Room area from Step 1', fromPreviousStep: 'roomArea_m2' },
+        { name: 'requiredLux', label: 'Required Illuminance', unit: 'lux', type: 'number', min: 50, max: 5000, default: 200, required: true, help: 'Required maintained illuminance from Step 1' },
+        { name: 'fixtureFlux_lumen', label: 'Total Flux Per Fixture', unit: 'lm', type: 'number', min: 100, max: 100000, required: true, help: 'Total flux per fixture from Step 2', fromPreviousStep: 'fixtureFlux_lumen' },
+        { name: 'ceilingReflection_val', label: 'Ceiling Reflection', unit: '', type: 'number', min: 0, max: 1, required: true, help: 'Ceiling reflection from Step 2', fromPreviousStep: 'ceilingReflection_val' },
+        { name: 'wallReflection_val', label: 'Wall Reflection', unit: '', type: 'number', min: 0, max: 1, required: true, help: 'Wall reflection from Step 2', fromPreviousStep: 'wallReflection_val' },
+        { name: 'maintenanceFactor', label: 'Maintenance Factor', unit: '', type: 'number', min: 0.5, max: 1, required: true, help: 'Maintenance factor from Step 2', fromPreviousStep: 'maintenanceFactor' },
+        { name: 'roomLength_m', label: 'Room Length', unit: 'm', type: 'number', min: 1, max: 100, default: 7, required: true, help: 'Room length for fixture spacing calculation' },
+        { name: 'roomWidth_m', label: 'Room Width', unit: 'm', type: 'number', min: 1, max: 100, default: 4, required: true, help: 'Room width for fixture spacing calculation' },
+      ],
+      outputs: [
+        { name: 'utilizationFactor', label: 'Coefficient of Utilization (CU)', unit: '', precision: 3 },
+        { name: 'requiredFixtures', label: 'Required Fixtures', unit: '', precision: 0 },
+        { name: 'fixturesAlongLength', label: 'Fixtures Along Length', unit: '', precision: 0 },
+        { name: 'fixturesAcrossWidth', label: 'Fixtures Across Width', unit: '', precision: 0 },
+        { name: 'totalFixtures', label: 'Total Fixtures (arranged)', unit: '', precision: 0 },
+        { name: 'actualLux', label: 'Achieved Maintained Illuminance', unit: 'lux', precision: 0 },
+        { name: 'spacingAlongLength_m', label: 'Spacing Along Length', unit: 'm', precision: 2 },
+        { name: 'spacingAcrossWidth_m', label: 'Spacing Across Width', unit: 'm', precision: 2 },
+      ],
+      calculate(inp) {
+        const RI = Number(inp.roomIndex);
+        const area = Number(inp.roomArea_m2);
+        const lux = Number(inp.requiredLux);
+        const fixtureFlux = Number(inp.fixtureFlux_lumen);
+        const ceilRef = Number(inp.ceilingReflection_val);
+        const wallRef = Number(inp.wallReflection_val);
+        const MF = Number(inp.maintenanceFactor);
+        const roomL = Number(inp.roomLength_m);
+        const roomW = Number(inp.roomWidth_m);
+
+        // Look up CU
+        const CU = lookupCU(RI, ceilRef, wallRef);
+
+        // Required number of fixtures
+        const N = Math.ceil((lux * area) / (fixtureFlux * CU * MF));
+
+        // Fixture arrangement — distribute proportionally to room dimensions
+        const ratio = roomL / roomW;
+        let alongL = Math.max(1, Math.round(Math.sqrt(N * ratio)));
+        let acrossW = Math.max(1, Math.ceil(N / alongL));
+
+        // Adjust if total is less than required
+        while (alongL * acrossW < N) {
+          acrossW += 1;
+        }
+
+        const totalFixtures = alongL * acrossW;
+
+        // Spacing
+        const spacingL = roomL / alongL;
+        const spacingW = roomW / acrossW;
+
+        // Actual achieved lux
+        const actualLux = (totalFixtures * fixtureFlux * CU * MF) / area;
+
+        return {
+          utilizationFactor: CU,
+          requiredFixtures: N,
+          fixturesAlongLength: alongL,
+          fixturesAcrossWidth: acrossW,
+          totalFixtures: totalFixtures,
+          actualLux: Math.round(actualLux),
+          spacingAlongLength_m: Math.round(spacingL * 100) / 100,
+          spacingAcrossWidth_m: Math.round(spacingW * 100) / 100,
+        };
+      }
+    }
+  ]
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pipeline 8: Motor Starter Sizing
+// ─────────────────────────────────────────────────────────────────────────────
+
+const motorStarterSizing: EngineeringPipeline = {
+  id: 'motor-starter-sizing',
+  name: 'Motor Starter Sizing',
+  description: 'Size motor starter components per NEC 430-52: calculate full-load current, starting current, select fuse ratings, contactor sizes, and overload relay settings for DOL and Star-Delta starters.',
+  domain: 'electrical',
+  difficulty: 'intermediate',
+  estimated_time: '10-15 min',
+  icon: '⚙️',
+  steps: [
+    {
+      stepNumber: 1,
+      name: 'Motor Data',
+      description: 'Enter the motor nameplate data including phase, power rating, NEMA code letter, efficiency, RPM, power factor, system voltage, starter type, and overload relay position.',
+      standard_ref: 'NEC 430-52',
+      formula_display: [
+        'Motor kW = HP × 0.746',
+        'FLC = kW / (√3 × V × PF × η)  [3-phase]',
+        'FLC = kW / (V × PF × η)        [1-phase]',
+        'Lock rotor kVA from NEMA code letter',
+        'Starting current depends on starter type',
+      ],
+      inputs: [
+        { name: 'phase', label: 'Phase', unit: '', type: 'select', options: [
+          { value: '1-phase', label: '1-Phase' }, { value: '3-phase', label: '3-Phase' },
+        ], default: '3-phase', required: true, help: 'Motor phase configuration' },
+        { name: 'motorSize_HP', label: 'Motor Size', unit: 'HP', type: 'number', min: 0.5, max: 500, default: 10, required: true, help: 'Motor rated power in horsepower (1 HP ≈ 0.746 kW)' },
+        { name: 'motorCode', label: 'NEMA Code Letter', unit: '', type: 'select', options: [
+          { value: 'A', label: 'A (0–3.15 kVA/HP)' }, { value: 'B', label: 'B (3.15–3.55)' },
+          { value: 'C', label: 'C (3.55–4.00)' }, { value: 'D', label: 'D (4.00–4.50)' },
+          { value: 'E', label: 'E (4.50–5.00)' }, { value: 'F', label: 'F (5.00–5.60)' },
+          { value: 'G', label: 'G (5.60–6.30)' }, { value: 'H', label: 'H (6.30–7.10)' },
+          { value: 'J', label: 'J (7.10–8.00)' }, { value: 'K', label: 'K (8.00–9.00)' },
+          { value: 'L', label: 'L (9.00–10.00)' }, { value: 'M', label: 'M (10.0–11.2)' },
+          { value: 'N', label: 'N (11.2–12.5)' }, { value: 'P', label: 'P (12.5–14.0)' },
+          { value: 'R', label: 'R (14.0–16.0)' }, { value: 'S', label: 'S (16.0–18.0)' },
+          { value: 'T', label: 'T (18.0–20.0)' }, { value: 'U', label: 'U (20.0–22.4)' },
+          { value: 'V', label: 'V (22.4+)' },
+        ], default: 'G', required: true, help: 'NEMA code letter from motor nameplate — indicates locked-rotor kVA/HP' },
+        { name: 'motorEfficiency', label: 'Motor Efficiency', unit: '', type: 'number', min: 0.5, max: 1.0, default: 1, required: true, help: 'Motor full-load efficiency (use 1.0 if unknown, or typical 0.88–0.95)' },
+        { name: 'motorRPM', label: 'Motor Speed', unit: 'RPM', type: 'number', min: 300, max: 3600, default: 600, required: true, help: 'Motor rated speed in RPM (affects torque characteristics)' },
+        { name: 'systemPF', label: 'System Power Factor', unit: '', type: 'number', min: 0.5, max: 1.0, default: 0.8, required: true, help: 'Motor operating power factor' },
+        { name: 'systemVoltage_V', label: 'System Voltage', unit: 'V', type: 'number', min: 100, max: 1000, default: 415, required: true, help: 'Line-to-line supply voltage' },
+        { name: 'starterType', label: 'Starter Type', unit: '', type: 'select', options: [
+          { value: 'DOL', label: 'DOL (Direct-On-Line)' }, { value: 'Star-Delta', label: 'Star-Delta' },
+        ], default: 'DOL', required: true, help: 'Motor starting method — DOL applies full voltage, Star-Delta reduces starting current to ~1/3' },
+        { name: 'olRelayPosition', label: 'OL Relay Position', unit: '', type: 'select', options: [
+          { value: 'in-line', label: 'In-line (motor current)' }, { value: 'in-winding', label: 'In-winding (winding current)' },
+        ], default: 'in-line', required: true, help: 'Position of overload relay — in-line measures motor current, in-winding measures phase current (Star-Delta only)' },
+      ],
+      outputs: [
+        { name: 'motor_kW', label: 'Motor Rated Power', unit: 'kW', precision: 2 },
+        { name: 'torque_Nm', label: 'Rated Torque', unit: 'N·m', precision: 2 },
+        { name: 'lockRotor_kVA_HP', label: 'Lock Rotor kVA/HP', unit: 'kVA/HP', precision: 2 },
+        { name: 'lockRotor_kVA', label: 'Lock Rotor kVA', unit: 'kVA', precision: 2 },
+        { name: 'fullLoadCurrent_A', label: 'Full-Load Current (FLC)', unit: 'A', precision: 2 },
+        { name: 'startingCurrent_A', label: 'Starting Current', unit: 'A', precision: 2 },
+      ],
+      calculate(inp) {
+        const HP = Number(inp.motorSize_HP);
+        const kW = HP * 0.746;
+        const rpm = Number(inp.motorRPM);
+        const pf = Number(inp.systemPF);
+        const eff = Number(inp.motorEfficiency);
+        const V = Number(inp.systemVoltage_V);
+        const is3phase = inp.phase === '3-phase';
+        const starterType = String(inp.starterType);
+
+        // Torque: T = (kW × 9550) / RPM
+        const torque = (kW * 9550) / rpm;
+
+        // Lock rotor from NEMA code
+        const motorCodeData = lookupMotorCode(String(inp.motorCode));
+
+        // Full-load current
+        const FLC = is3phase
+          ? (kW * 1000) / (Math.sqrt(3) * V * pf * eff)
+          : (kW * 1000) / (V * pf * eff);
+
+        // Starting current
+        const lockRotorI = (motorCodeData.typical_kVA_HP * HP * 1000) / (is3phase ? Math.sqrt(3) * V : V);
+        const startingI = starterType === 'Star-Delta' ? lockRotorI / 3 : lockRotorI;
+
+        return {
+          motor_kW: Math.round(kW * 100) / 100,
+          torque_Nm: Math.round(torque * 100) / 100,
+          lockRotor_kVA_HP: motorCodeData.typical_kVA_HP,
+          lockRotor_kVA: Math.round(motorCodeData.typical_kVA_HP * HP * 100) / 100,
+          fullLoadCurrent_A: Math.round(FLC * 100) / 100,
+          startingCurrent_A: Math.round(startingI * 100) / 100,
+        };
+      }
+    },
+    {
+      stepNumber: 2,
+      name: 'Starter Component Sizing',
+      description: 'Size all starter components based on the motor full-load and starting currents: fuse ratings per NEC 430-52, contactor sizes, and overload relay settings. Different rules apply for DOL vs Star-Delta configurations.',
+      standard_ref: 'NEC 430-52',
+      formula_display: [
+        'Fuse rating (DOL): ≤ 300% × FLC (NEC 430-52 Table)',
+        'Fuse rating (Star-Delta): ≤ 300% × FLC',
+        'Main contactor: rated ≥ FLC (DOL) or ≥ 0.58 × FLC (Star-Delta)',
+        'OL relay setting: 100–115% × FLC (in-line)',
+        'OL relay setting: 58–65% × FLC (in-winding, Star-Delta)',
+      ],
+      inputs: [
+        { name: 'fullLoadCurrent_A', label: 'Full-Load Current', unit: 'A', type: 'number', min: 0.1, max: 5000, required: true, help: 'FLC from Step 1', fromPreviousStep: 'fullLoadCurrent_A' },
+        { name: 'startingCurrent_A', label: 'Starting Current', unit: 'A', type: 'number', min: 0.1, max: 50000, required: true, help: 'Starting current from Step 1', fromPreviousStep: 'startingCurrent_A' },
+        { name: 'starterType', label: 'Starter Type', unit: '', type: 'select', options: [
+          { value: 'DOL', label: 'DOL' }, { value: 'Star-Delta', label: 'Star-Delta' },
+        ], default: 'DOL', required: true, help: 'Starter type from Step 1' },
+        { name: 'olRelayPosition', label: 'OL Relay Position', unit: '', type: 'select', options: [
+          { value: 'in-line', label: 'In-line' }, { value: 'in-winding', label: 'In-winding' },
+        ], default: 'in-line', required: true, help: 'OL relay position from Step 1' },
+      ],
+      outputs: [
+        { name: 'fuseSize_A', label: 'Fuse Rating', unit: 'A', precision: 0 },
+        { name: 'mainContactor_A', label: 'Main Contactor Rating', unit: 'A', precision: 1 },
+        { name: 'starContactor_A', label: 'Star Contactor Rating', unit: 'A', precision: 1 },
+        { name: 'deltaContactor_A', label: 'Delta Contactor Rating', unit: 'A', precision: 1 },
+        { name: 'olRelaySetting_A', label: 'OL Relay Setting', unit: 'A', precision: 2 },
+        { name: 'olRelayRange', label: 'OL Relay Range', unit: 'A', precision: 2 },
+      ],
+      calculate(inp) {
+        const FLC = Number(inp.fullLoadCurrent_A);
+        const starterType = String(inp.starterType);
+        const olPosition = String(inp.olRelayPosition);
+
+        // Fuse sizing per NEC 430-52
+        // Time-delay fuses: max 175% FLC, non-time-delay: max 300% FLC
+        // Using time-delay fuse as standard practice
+        const fuseMax = FLC * 1.75;
+        const fuseSize = selectMCCBSize(Math.ceil(fuseMax));
+
+        if (starterType === 'DOL') {
+          // DOL: single contactor rated for FLC
+          const mainContactor = selectMCCBSize(Math.ceil(FLC));
+          const olSetting = FLC * 1.05; // 105% of FLC
+          const olRange_min = FLC * 0.9;
+          const olRange_max = FLC * 1.15;
+
+          return {
+            fuseSize_A: fuseSize,
+            mainContactor_A: mainContactor,
+            starContactor_A: 0, // not applicable for DOL
+            deltaContactor_A: 0,
+            olRelaySetting_A: Math.round(olSetting * 100) / 100,
+            olRelayRange: `${Math.round(olRange_min * 100) / 100}–${Math.round(olRange_max * 100) / 100}`,
+          };
+        } else {
+          // Star-Delta: three contactors
+          // Main and Delta contactors carry line current = FLC
+          // Star contactor carries winding current ≈ 0.58 × FLC
+          const mainContactor = selectMCCBSize(Math.ceil(FLC));
+          const deltaContactor = selectMCCBSize(Math.ceil(FLC));
+          const starContactor = selectMCCBSize(Math.ceil(FLC * 0.58));
+
+          // OL relay
+          let olSetting: number;
+          let olMin: number;
+          let olMax: number;
+          if (olPosition === 'in-winding') {
+            // In-winding: measures phase current = FLC / √3 ≈ 0.58 × FLC
+            olSetting = (FLC / Math.sqrt(3)) * 1.05;
+            olMin = (FLC / Math.sqrt(3)) * 0.9;
+            olMax = (FLC / Math.sqrt(3)) * 1.15;
+          } else {
+            // In-line: measures motor line current
+            olSetting = FLC * 1.05;
+            olMin = FLC * 0.9;
+            olMax = FLC * 1.15;
+          }
+
+          return {
+            fuseSize_A: fuseSize,
+            mainContactor_A: mainContactor,
+            starContactor_A: starContactor,
+            deltaContactor_A: deltaContactor,
+            olRelaySetting_A: Math.round(olSetting * 100) / 100,
+            olRelayRange: `${Math.round(olMin * 100) / 100}–${Math.round(olMax * 100) / 100}`,
+          };
+        }
+      }
+    }
+  ]
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pipeline 9: Cable & Breaker Selection
+// ─────────────────────────────────────────────────────────────────────────────
+
+const cableBreakerSelection: EngineeringPipeline = {
+  id: 'cable-breaker-selection',
+  name: 'Cable & Breaker Selection',
+  description: 'Select cable size and breaker rating per IEC 60364/IEE/Egyptian Code: calculate design current, apply correction factors, select cable cross-section, verify voltage drop and short-circuit withstand, and coordinate with breaker protection.',
+  domain: 'electrical',
+  difficulty: 'advanced',
+  estimated_time: '15-20 min',
+  icon: '🔌',
+  steps: [
+    {
+      stepNumber: 1,
+      name: 'Load & Route Data',
+      description: 'Define the load parameters and cable route including power, power factor, voltage, cable length, insulation type, and installation method. These determine the base design current and cable environmental conditions.',
+      standard_ref: 'IEC 60364 / IEE / Egyptian Code',
+      formula_display: [
+        'I_b = load_kW / (√3 × voltage_kV × PF)',
+        'Insulation: PVC (70°C) or XLPE (90°C)',
+        'Installation: ground, ducts, or air',
+      ],
+      inputs: [
+        { name: 'fromLocation', label: 'From Location', unit: '', type: 'number', min: 0, max: 9999, default: 1, required: true, help: 'Source location identifier' },
+        { name: 'toLocation', label: 'To Location', unit: '', type: 'number', min: 0, max: 9999, default: 2, required: true, help: 'Destination location identifier' },
+        { name: 'routeType', label: 'Route Type', unit: '', type: 'select', options: [
+          { value: 'AIR', label: 'AIR' }, { value: 'XLPE', label: 'XLPE Underground' }, { value: 'PVC', label: 'PVC Underground' },
+        ], default: 'AIR', required: true, help: 'Cable routing environment' },
+        { name: 'voltage_kV', label: 'System Voltage', unit: 'kV', type: 'number', min: 0.1, max: 35, default: 0.38, required: true, help: 'Line-to-line system voltage in kV' },
+        { name: 'load_kW', label: 'Connected Load', unit: 'kW', type: 'number', min: 0.1, max: 5000, default: 50, required: true, help: 'Total connected active power in kW' },
+        { name: 'powerFactor', label: 'Power Factor', unit: '', type: 'number', min: 0.5, max: 1.0, default: 0.8, required: true, help: 'Load power factor' },
+        { name: 'length_m', label: 'Cable Length', unit: 'm', type: 'number', min: 1, max: 5000, default: 60, required: true, help: 'One-way cable length in meters' },
+        { name: 'insulation', label: 'Cable Insulation', unit: '', type: 'select', options: [
+          { value: 'PVC', label: 'PVC (70°C max)' }, { value: 'XLPE', label: 'XLPE (90°C max)' },
+        ], default: 'PVC', required: true, help: 'Cable insulation material' },
+        { name: 'installation', label: 'Installation Method', unit: '', type: 'select', options: [
+          { value: 'ground', label: 'Direct in ground' },
+          { value: 'ducts', label: 'In ducts' },
+          { value: 'air', label: 'In air (clipped/tray)' },
+        ], default: 'air', required: true, help: 'Cable installation method per IEC 60364-5-52' },
+      ],
+      outputs: [
+        { name: 'Ib', label: 'Design Current (I_b)', unit: 'A', precision: 2 },
+        { name: 'load_kVA', label: 'Apparent Load', unit: 'kVA', precision: 2 },
+      ],
+      calculate(inp) {
+        const load = Number(inp.load_kW);
+        const pf = Number(inp.powerFactor);
+        const V_kV = Number(inp.voltage_kV);
+
+        const Ib = load / (Math.sqrt(3) * V_kV * pf);
+        const kVA = load / pf;
+
+        return {
+          Ib: Math.round(Ib * 100) / 100,
+          load_kVA: Math.round(kVA * 100) / 100,
+        };
+      }
+    },
+    {
+      stepNumber: 2,
+      name: 'Correction & Transformer Data',
+      description: 'Apply correction factors for ambient temperature, cable grouping, and parallel cables. Also specify upstream transformer data for short-circuit calculations.',
+      standard_ref: 'IEC 60364 / IEE / Egyptian Code',
+      formula_display: [
+        'CF = C_a × C_g × C_f × C_i',
+        'I_t = I_b / CF (required tabulated current)',
+        'Transformer impedance for S.C. calculation',
+        'Upstream voltage drop consideration',
+      ],
+      inputs: [
+        { name: 'transformer_kVA', label: 'Upstream Transformer Rating', unit: 'kVA', type: 'number', min: 50, max: 5000, default: 1000, required: true, help: 'Rating of the upstream supply transformer (for short-circuit calculation)' },
+        { name: 'noOfParallelCables', label: 'No. of Parallel Cables', unit: '', type: 'number', min: 1, max: 10, default: 1, required: true, help: 'Number of cables in parallel per phase (increases total current capacity)' },
+        { name: 'ambientTempFactor', label: 'Ambient Temp Factor (C_a)', unit: '', type: 'number', min: 0.5, max: 1.5, default: 1, required: true, help: 'Correction factor for ambient temperature (1.0 at 30°C, see IEC 60364 Table B.52.14)' },
+        { name: 'groupingFactor', label: 'Grouping Factor (C_g)', unit: '', type: 'number', min: 0.5, max: 1.0, default: 0.91, required: true, help: 'Correction factor for number of circuits grouped together (see IEC 60364 Table B.52.17)' },
+        { name: 'cf', label: 'Cable Foundation Factor (C_f)', unit: '', type: 'number', min: 0.5, max: 1.0, default: 1, required: true, help: 'Correction factor for thermal resistivity of soil (1.0 for normal soil)' },
+        { name: 'ci', label: 'Thermal Insulation Factor (C_i)', unit: '', type: 'number', min: 0.5, max: 1.0, default: 1, required: true, help: 'Correction factor for thermal insulation (1.0 if no thermal insulation)' },
+        { name: 'upstreamVD_pct', label: 'Upstream Voltage Drop', unit: '%', type: 'number', min: 0, max: 5, default: 0, required: true, help: 'Voltage drop already present in upstream network (0% if not known)' },
+      ],
+      outputs: [
+        { name: 'CF', label: 'Combined Correction Factor', unit: '', precision: 4 },
+        { name: 'It', label: 'Required Tabulated Current (I_t)', unit: 'A', precision: 2 },
+        { name: 'transformerImpedance_pct', label: 'Transformer Impedance', unit: '%', precision: 2 },
+      ],
+      calculate(inp) {
+        const Ib = Number(inp.Ib) || 0; // will be linked
+        const Ca = Number(inp.ambientTempFactor);
+        const Cg = Number(inp.groupingFactor);
+        const Cf = Number(inp.cf);
+        const Ci = Number(inp.ci);
+        const kVA = Number(inp.transformer_kVA);
+        const nParallel = Number(inp.noOfParallelCables);
+
+        const CF = Ca * Cg * Cf * Ci;
+        // Required tabulated current per cable
+        const It = Ib / (CF * nParallel);
+
+        const Z_pct = lookupTransformerImpedance(kVA);
+
+        return {
+          CF: Math.round(CF * 10000) / 10000,
+          It: Math.round(It * 100) / 100,
+          transformerImpedance_pct: Z_pct,
+        };
+      }
+    },
+    {
+      stepNumber: 3,
+      name: 'Results & Compliance',
+      description: 'Select cable size and breaker rating, calculate voltage drop and short-circuit withstand, and verify compliance with all IEC 60364 requirements.',
+      standard_ref: 'IEC 60364 / IEE / Egyptian Code',
+      formula_display: [
+        'Cable size: selectCableSize(I_t, insulation, installation)',
+        'Breaker: selectMCCBSize(I_b) — rated ≥ I_b',
+        'VD = √3 × I_b × L × (R·cosφ + X·sinφ) / (parallel × 1000)',
+        'VD% = (VD / V) × 100 ≤ 2.5% (with upstream)',
+        'S.C. current = transformer full-load / Z%',
+        'S_min = I_sc × √t / k (adiabatic check)',
+        'Compliance: I_z ≥ I_b, VD% ≤ limit, S ≥ S_min',
+      ],
+      inputs: [
+        { name: 'Ib', label: 'Design Current (I_b)', unit: 'A', type: 'number', min: 0.1, max: 5000, required: true, help: 'Design current from Step 1', fromPreviousStep: 'Ib' },
+        { name: 'It', label: 'Required Tabulated Current', unit: 'A', type: 'number', min: 0.1, max: 5000, required: true, help: 'Required tabulated current from Step 2', fromPreviousStep: 'It' },
+        { name: 'CF', label: 'Combined Correction Factor', unit: '', type: 'number', min: 0.1, max: 2, required: true, help: 'Combined correction factor from Step 2', fromPreviousStep: 'CF' },
+        { name: 'transformer_kVA', label: 'Transformer Rating', unit: 'kVA', type: 'number', min: 50, max: 5000, default: 1000, required: true, help: 'Transformer kVA rating' },
+        { name: 'transformerImpedance_pct', label: 'Transformer Impedance', unit: '%', type: 'number', min: 1, max: 15, required: true, help: 'Transformer impedance from Step 2', fromPreviousStep: 'transformerImpedance_pct' },
+        { name: 'voltage_kV', label: 'System Voltage', unit: 'kV', type: 'number', min: 0.1, max: 35, default: 0.38, required: true, help: 'System voltage from Step 1' },
+        { name: 'powerFactor', label: 'Power Factor', unit: '', type: 'number', min: 0.5, max: 1.0, default: 0.8, required: true, help: 'Power factor from Step 1' },
+        { name: 'length_m', label: 'Cable Length', unit: 'm', type: 'number', min: 1, max: 5000, default: 60, required: true, help: 'Cable length from Step 1' },
+        { name: 'noOfParallelCables', label: 'No. of Parallel Cables', unit: '', type: 'number', min: 1, max: 10, default: 1, required: true, help: 'Parallel cables from Step 2' },
+        { name: 'insulation', label: 'Cable Insulation', unit: '', type: 'select', options: [
+          { value: 'PVC', label: 'PVC (k=115)' }, { value: 'XLPE', label: 'XLPE (k=143)' },
+        ], default: 'PVC', required: true, help: 'Cable insulation' },
+        { name: 'installation', label: 'Installation Method', unit: '', type: 'select', options: [
+          { value: 'ground', label: 'Ground' }, { value: 'ducts', label: 'Ducts' }, { value: 'air', label: 'Air' },
+        ], default: 'air', required: true, help: 'Installation method' },
+        { name: 'upstreamVD_pct', label: 'Upstream Voltage Drop', unit: '%', type: 'number', min: 0, max: 5, default: 0, required: true, help: 'Upstream VD from Step 2' },
+      ],
+      outputs: [
+        { name: 'cableSize_mm2', label: 'Selected Cable Size', unit: 'mm²', precision: 0 },
+        { name: 'cableAmpacity_A', label: 'Derated Cable Ampacity (I_z)', unit: 'A', precision: 1 },
+        { name: 'breakerRating_A', label: 'Breaker Rating', unit: 'A', precision: 0 },
+        { name: 'voltageDrop_V', label: 'Voltage Drop', unit: 'V', precision: 2 },
+        { name: 'voltageDrop_pct', label: 'Total Voltage Drop %', unit: '%', precision: 2 },
+        { name: 'scCurrent_kA', label: 'Short-Circuit Current', unit: 'kA', precision: 2 },
+        { name: 'scMinSize_mm2', label: 'Min CS for S.C.', unit: 'mm²', precision: 1 },
+        { name: 'ampacity_compliant', label: 'I_z ≥ I_b (Ampacity)', unit: '', precision: 0, isCompliance: true },
+        { name: 'vd_compliant', label: 'VD ≤ 2.5% (Total)', unit: '', precision: 0, isCompliance: true },
+        { name: 'sc_compliant', label: 'CS ≥ S_min (S.C.)', unit: '', precision: 0, isCompliance: true },
+      ],
+      calculate(inp) {
+        const Ib = Number(inp.Ib);
+        const It = Number(inp.It);
+        const CF = Number(inp.CF);
+        const transKVA = Number(inp.transformer_kVA);
+        const Z_pct = Number(inp.transformerImpedance_pct);
+        const V_kV = Number(inp.voltage_kV);
+        const pf = Number(inp.powerFactor);
+        const L = Number(inp.length_m);
+        const nParallel = Math.max(Number(inp.noOfParallelCables), 1);
+        const insType = String(inp.insulation);
+        const instMethod = String(inp.installation);
+        const upstreamVD = Number(inp.upstreamVD_pct);
+
+        // Select cable size
+        const cableSelection = selectCableSizeFromLib(It, insType, instMethod);
+        const cableSize = cableSelection.size_mm2;
+
+        // Get base ampacity and derate
+        const baseAmpacity = lookupCableAmpacity(cableSize, insType);
+        const deratedAmpacity = baseAmpacity * CF * nParallel;
+
+        // Breaker selection
+        const breakerRating = selectMCCBSize(Math.ceil(Ib));
+
+        // Voltage drop
+        const impedance = lookupCableImpedance(cableSize, 'CU', insType as 'PVC' | 'XLPE');
+        const sinPhi = Math.sqrt(1 - pf * pf);
+        const vdV = (Math.sqrt(3) * Ib * L * (impedance.R * pf + impedance.X * sinPhi)) / (nParallel * 1000);
+        const V_LL = V_kV * 1000;
+        const vdPct = (vdV / V_LL) * 100 + upstreamVD;
+
+        // Short-circuit current at cable origin
+        const transFLA = transKVA * 1000 / (Math.sqrt(3) * V_LL);
+        const scCurrent = transFLA / (Z_pct / 100);
+
+        // Short-circuit minimum size (1 second)
+        const k = insType === 'XLPE' ? 143 : 115;
+        const scMinSize = (scCurrent * Math.sqrt(1)) / k;
+
+        return {
+          cableSize_mm2: cableSize,
+          cableAmpacity_A: Math.round(deratedAmpacity * 10) / 10,
+          breakerRating_A: breakerRating,
+          voltageDrop_V: Math.round(vdV * 100) / 100,
+          voltageDrop_pct: Math.round(vdPct * 100) / 100,
+          scCurrent_kA: Math.round(scCurrent / 1000 * 100) / 100,
+          scMinSize_mm2: Math.round(scMinSize * 10) / 10,
+          ampacity_compliant: deratedAmpacity >= Ib,
+          vd_compliant: vdPct <= 2.5,
+          sc_compliant: cableSize >= scMinSize,
+        };
+      }
+    }
+  ]
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pipeline 10: Load Schedule Generator
+// ─────────────────────────────────────────────────────────────────────────────
+
+const loadScheduleGenerator: EngineeringPipeline = {
+  id: 'load-schedule-generator',
+  name: 'Load Schedule Generator',
+  description: 'Generate a load schedule per IEC 61439: calculate total connected load per phase, apply demand factors, determine maximum demand, select main breaker and feeder cable size, and verify phase balance.',
+  domain: 'electrical',
+  difficulty: 'intermediate',
+  estimated_time: '10-15 min',
+  icon: '📋',
+  steps: [
+    {
+      stepNumber: 1,
+      name: 'Panel Data',
+      description: 'Define the electrical panel parameters: name, service voltage, bus rating, demand factor, and physical installation details.',
+      standard_ref: 'IEC 61439',
+      formula_display: [
+        'Panel name and service voltage',
+        'Bus rating determines maximum panel capacity',
+        'Demand factor applied to total connected load',
+      ],
+      inputs: [
+        { name: 'panelName', label: 'Panel Name', unit: '', type: 'number', min: 0, max: 9999, default: 1, required: true, help: 'Panel identifier or name' },
+        { name: 'serviceVoltage_V', label: 'Service Voltage (L-L)', unit: 'V', type: 'number', min: 100, max: 1000, default: 380, required: true, help: 'Line-to-line service voltage feeding the panel' },
+        { name: 'busRating_A', label: 'Bus Rating', unit: 'A', type: 'number', min: 50, max: 6300, default: 100, required: true, help: 'Main busbar current rating of the panel' },
+        { name: 'demandFactor_pct', label: 'Demand Factor', unit: '%', type: 'number', min: 10, max: 100, default: 90, required: true, help: 'Percentage of connected load expected to operate simultaneously (90% typical for mixed loads)' },
+        { name: 'location', label: 'Location', unit: '', type: 'number', min: 0, max: 9999, default: 1, required: true, help: 'Installation location identifier' },
+        { name: 'mounting', label: 'Mounting Type', unit: '', type: 'select', options: [
+          { value: 'floor', label: 'Floor-mounted' }, { value: 'wall', label: 'Wall-mounted' },
+        ], default: 'floor', required: true, help: 'Panel mounting type' },
+      ],
+      outputs: [
+        { name: 'busCapacity_kVA', label: 'Bus Capacity', unit: 'kVA', precision: 2 },
+        { name: 'demandFactor', label: 'Demand Factor (decimal)', unit: '', precision: 2 },
+      ],
+      calculate(inp) {
+        const V = Number(inp.serviceVoltage_V);
+        const busA = Number(inp.busRating_A);
+        const dfPct = Number(inp.demandFactor_pct);
+
+        const busKVA = (Math.sqrt(3) * V * busA) / 1000;
+        const df = dfPct / 100;
+
+        return {
+          busCapacity_kVA: Math.round(busKVA * 100) / 100,
+          demandFactor: df,
+        };
+      }
+    },
+    {
+      stepNumber: 2,
+      name: 'Circuit Data',
+      description: 'Enter the total load breakdown by category: lighting, motors, air conditioning, and other loads. The simplified approach distributes total loads across the three phases.',
+      standard_ref: 'IEC 61439',
+      formula_display: [
+        'Total connected = lighting + motor + AC + other',
+        'Phase distribution: balanced or custom',
+        'Balanced: each phase = total / 3',
+      ],
+      inputs: [
+        { name: 'totalLightingLoad_kW', label: 'Total Lighting Load', unit: 'kW', type: 'number', min: 0, max: 5000, default: 10, required: true, help: 'Total connected lighting load across all circuits (PF ≈ 1.0)' },
+        { name: 'totalMotorLoad_kW', label: 'Total Motor Load', unit: 'kW', type: 'number', min: 0, max: 5000, default: 25, required: true, help: 'Total connected motor load (PF ≈ 0.8–0.85, includes HVAC compressors)' },
+        { name: 'totalACLoad_kW', label: 'Total AC Load', unit: 'kW', type: 'number', min: 0, max: 5000, default: 15, required: true, help: 'Total air conditioning load (chillers, AHUs, FCUs)' },
+        { name: 'totalOtherLoad_kW', label: 'Total Other Load', unit: 'kW', type: 'number', min: 0, max: 5000, default: 5, required: true, help: 'Other loads (sockets, equipment, UPS, etc.)' },
+        { name: 'phaseDistribution', label: 'Phase Distribution', unit: '', type: 'select', options: [
+          { value: 'balanced', label: 'Balanced (equal per phase)' },
+          { value: 'custom', label: 'Custom (user-specified)' },
+        ], default: 'balanced', required: true, help: 'How loads are distributed across phases — balanced is the default and most common' },
+      ],
+      outputs: [
+        { name: 'totalConnected_kW', label: 'Total Connected Load', unit: 'kW', precision: 2 },
+        { name: 'phaseR_kW', label: 'Phase R Load', unit: 'kW', precision: 2 },
+        { name: 'phaseY_kW', label: 'Phase Y Load', unit: 'kW', precision: 2 },
+        { name: 'phaseB_kW', label: 'Phase B Load', unit: 'kW', precision: 2 },
+      ],
+      calculate(inp) {
+        const lighting = Number(inp.totalLightingLoad_kW);
+        const motor = Number(inp.totalMotorLoad_kW);
+        const ac = Number(inp.totalACLoad_kW);
+        const other = Number(inp.totalOtherLoad_kW);
+        const distribution = String(inp.phaseDistribution);
+
+        const total = lighting + motor + ac + other;
+
+        // Assumed power factors per load type
+        // Lighting: PF=1, Motor: PF=0.8, AC: PF=0.85, Other: PF=0.9
+        const total_kVA = lighting / 1.0 + motor / 0.8 + ac / 0.85 + other / 0.9;
+
+        let phaseR: number, phaseY: number, phaseB: number;
+        if (distribution === 'balanced') {
+          phaseR = total / 3;
+          phaseY = total / 3;
+          phaseB = total / 3;
+        } else {
+          // Custom: slightly unbalanced (R slightly higher)
+          phaseR = total * 0.35;
+          phaseY = total * 0.33;
+          phaseB = total * 0.32;
+        }
+
+        return {
+          totalConnected_kW: Math.round(total * 100) / 100,
+          phaseR_kW: Math.round(phaseR * 100) / 100,
+          phaseY_kW: Math.round(phaseY * 100) / 100,
+          phaseB_kW: Math.round(phaseB * 100) / 100,
+        };
+      }
+    },
+    {
+      stepNumber: 3,
+      name: 'Schedule Results',
+      description: 'Calculate the total demand, spare capacity, main breaker size, feeder cable size, and verify phase balance. Apply the demand factor to determine the maximum demand on the panel.',
+      standard_ref: 'IEC 61439',
+      formula_display: [
+        'Demand kVA = total connected kVA × demand factor',
+        'Spare kVA = bus capacity − demand kVA',
+        'Max demand current = demand kVA / (√3 × V)',
+        'Main breaker = selectMCCBSize(max demand current)',
+        'Feeder cable = selectCableSize(max demand current)',
+        'Phase imbalance = (max_phase − min_phase) / avg_phase × 100%',
+      ],
+      inputs: [
+        { name: 'totalConnected_kW', label: 'Total Connected Load', unit: 'kW', type: 'number', min: 0, max: 50000, required: true, help: 'Total connected load from Step 2', fromPreviousStep: 'totalConnected_kW' },
+        { name: 'phaseR_kW', label: 'Phase R Load', unit: 'kW', type: 'number', min: 0, max: 5000, required: true, help: 'Phase R from Step 2', fromPreviousStep: 'phaseR_kW' },
+        { name: 'phaseY_kW', label: 'Phase Y Load', unit: 'kW', type: 'number', min: 0, max: 5000, required: true, help: 'Phase Y from Step 2', fromPreviousStep: 'phaseY_kW' },
+        { name: 'phaseB_kW', label: 'Phase B Load', unit: 'kW', type: 'number', min: 0, max: 5000, required: true, help: 'Phase B from Step 2', fromPreviousStep: 'phaseB_kW' },
+        { name: 'serviceVoltage_V', label: 'Service Voltage', unit: 'V', type: 'number', min: 100, max: 1000, default: 380, required: true, help: 'Service voltage from Step 1' },
+        { name: 'busRating_A', label: 'Bus Rating', unit: 'A', type: 'number', min: 50, max: 6300, default: 100, required: true, help: 'Bus rating from Step 1' },
+        { name: 'demandFactor', label: 'Demand Factor (decimal)', unit: '', type: 'number', min: 0.1, max: 1, required: true, help: 'Demand factor from Step 1', fromPreviousStep: 'demandFactor' },
+        { name: 'totalLightingLoad_kW', label: 'Lighting Load', unit: 'kW', type: 'number', min: 0, max: 5000, default: 10, required: true, help: 'Lighting load for kVA calculation' },
+        { name: 'totalMotorLoad_kW', label: 'Motor Load', unit: 'kW', type: 'number', min: 0, max: 5000, default: 25, required: true, help: 'Motor load for kVA calculation' },
+        { name: 'totalACLoad_kW', label: 'AC Load', unit: 'kW', type: 'number', min: 0, max: 5000, default: 15, required: true, help: 'AC load for kVA calculation' },
+        { name: 'totalOtherLoad_kW', label: 'Other Load', unit: 'kW', type: 'number', min: 0, max: 5000, default: 5, required: true, help: 'Other load for kVA calculation' },
+      ],
+      outputs: [
+        { name: 'totalConnected_kVA', label: 'Total Connected kVA', unit: 'kVA', precision: 2 },
+        { name: 'demand_kVA', label: 'Demand kVA', unit: 'kVA', precision: 2 },
+        { name: 'demand_kW', label: 'Demand kW', unit: 'kW', precision: 2 },
+        { name: 'spare_kVA', label: 'Spare kVA', unit: 'kVA', precision: 2 },
+        { name: 'maxDemandCurrent_A', label: 'Max Demand Current', unit: 'A', precision: 2 },
+        { name: 'mainBreaker_A', label: 'Main Breaker Rating', unit: 'A', precision: 0 },
+        { name: 'feederCable_mm2', label: 'Feeder Cable Size', unit: 'mm²', precision: 0 },
+        { name: 'phaseImbalance_pct', label: 'Phase Imbalance', unit: '%', precision: 1 },
+        { name: 'phaseImbalance_compliant', label: 'Phase Imbalance ≤ 10%', unit: '', precision: 0, isCompliance: true },
+        { name: 'busCapacity_compliant', label: 'Demand ≤ Bus Capacity', unit: '', precision: 0, isCompliance: true },
+      ],
+      calculate(inp) {
+        const V = Number(inp.serviceVoltage_V);
+        const busA = Number(inp.busRating_A);
+        const df = Number(inp.demandFactor);
+        const phaseR = Number(inp.phaseR_kW);
+        const phaseY = Number(inp.phaseY_kW);
+        const phaseB = Number(inp.phaseB_kW);
+        const totalKW = Number(inp.totalConnected_kW);
+        const lighting = Number(inp.totalLightingLoad_kW);
+        const motor = Number(inp.totalMotorLoad_kW);
+        const ac = Number(inp.totalACLoad_kW);
+        const other = Number(inp.totalOtherLoad_kW);
+
+        // Calculate total kVA using per-category power factors
+        const totalKVA = lighting / 1.0 + motor / 0.8 + ac / 0.85 + other / 0.9;
+
+        // Demand
+        const demandKVA = totalKVA * df;
+        const demandKW = totalKW * df;
+
+        // Bus capacity
+        const busKVA = (Math.sqrt(3) * V * busA) / 1000;
+        const spareKVA = busKVA - demandKVA;
+
+        // Max demand current
+        const maxDemandI = (demandKVA * 1000) / (Math.sqrt(3) * V);
+
+        // Main breaker
+        const mainBreaker = selectMCCBSize(Math.ceil(maxDemandI));
+
+        // Feeder cable (using PVC in air as default)
+        const feederCable = selectCableSizeFromLib(Math.ceil(maxDemandI), 'PVC', 'air').size_mm2;
+
+        // Phase imbalance
+        const phases = [phaseR, phaseY, phaseB];
+        const maxPhase = Math.max(...phases);
+        const minPhase = Math.min(...phases);
+        const avgPhase = phases.reduce((a, b) => a + b, 0) / 3;
+        const imbalance = avgPhase > 0 ? ((maxPhase - minPhase) / avgPhase) * 100 : 0;
+
+        return {
+          totalConnected_kVA: Math.round(totalKVA * 100) / 100,
+          demand_kVA: Math.round(demandKVA * 100) / 100,
+          demand_kW: Math.round(demandKW * 100) / 100,
+          spare_kVA: Math.round(spareKVA * 100) / 100,
+          maxDemandCurrent_A: Math.round(maxDemandI * 100) / 100,
+          mainBreaker_A: mainBreaker,
+          feederCable_mm2: feederCable,
+          phaseImbalance_pct: Math.round(imbalance * 10) / 10,
+          phaseImbalance_compliant: imbalance <= 10,
+          busCapacity_compliant: demandKVA <= busKVA,
+        };
+      }
+    }
+  ]
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Domain Pipeline Imports
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -751,6 +1967,12 @@ export const ENGINEERING_PIPELINES: EngineeringPipeline[] = [
   pfCorrection,
   beamDesign,
   hvacCoolingLoad,
+  voltageDropCalculator,
+  busbarSizing,
+  indoorLightingDesign,
+  motorStarterSizing,
+  cableBreakerSelection,
+  loadScheduleGenerator,
 ];
 
 export function getPipelineById(id: string): EngineeringPipeline | undefined {
