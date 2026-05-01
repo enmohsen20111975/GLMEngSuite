@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { ensureDatabase } from '@/lib/database'
+import { db } from '@/lib/db'
 
 export async function GET(request: NextRequest) {
   try {
-    const db = await ensureDatabase()
     const { searchParams } = new URL(request.url)
     const domain = searchParams.get('domain')
     const categoryId = searchParams.get('category_id')
@@ -11,95 +10,83 @@ export async function GET(request: NextRequest) {
     const limit = parseInt(searchParams.get('limit') || '50')
     const offset = parseInt(searchParams.get('offset') || '0')
 
-    // Build query
-    let sql = `
-      SELECT
-        e.id, e.equation_id, e.name, e.description, e.domain,
-        e.category_id, e.equation, e.equation_latex, e.equation_pattern,
-        e.difficulty_level, e.tags, e.is_active,
-        ec.name as category_name, ec.icon as category_icon, ec.slug as category_slug, ec.color as category_color
-      FROM equations e
-      LEFT JOIN equation_categories ec ON e.category_id = ec.id
-      WHERE e.is_active = 1
-    `
-    const params: unknown[] = []
-
+    // Build where clause
+    const where: Record<string, unknown> = {}
     if (domain) {
-      sql += ` AND e.domain = ?`
-      params.push(domain)
+      where.domain = domain
     }
     if (categoryId) {
-      sql += ` AND e.category_id = ?`
-      params.push(parseInt(categoryId))
+      where.categoryId = categoryId
     }
     if (search) {
-      sql += ` AND (e.name LIKE ? OR e.description LIKE ? OR e.tags LIKE ?)`
-      params.push(`%${search}%`, `%${search}%`, `%${search}%`)
+      where.OR = [
+        { name: { contains: search } },
+        { description: { contains: search } },
+        { tags: { contains: search } },
+      ]
     }
 
-    sql += ` ORDER BY e.name LIMIT ? OFFSET ?`
-    params.push(limit, offset)
+    // Fetch equations with inputs, outputs, and category ref
+    const [equations, totalCount] = await Promise.all([
+      db.equation.findMany({
+        where,
+        include: {
+          inputs: { orderBy: { order: 'asc' } },
+          outputs: { orderBy: { order: 'asc' } },
+          categoryRef: true,
+        },
+        orderBy: { name: 'asc' },
+        skip: offset,
+        take: limit,
+      }),
+      db.equation.count({ where }),
+    ])
 
-    const equations = await db.queryWorkflows(sql, params)
-
-    // Batch-fetch inputs and outputs for ALL equations in one query each
-    const eqIds = equations.map(eq => (eq as Record<string, unknown>).id as number)
-
-    let inputsMap: Record<number, unknown[]> = {}
-    let outputsMap: Record<number, unknown[]> = {}
-
-    if (eqIds.length > 0) {
-      // Batch fetch all inputs for these equations
-      const placeholders = eqIds.map(() => '?').join(',')
-      const allInputs = await db.queryWorkflows(
-        `SELECT * FROM equation_inputs WHERE equation_id IN (${placeholders}) ORDER BY input_order`,
-        eqIds
-      )
-      // Group by equation_id
-      for (const inp of allInputs) {
-        const eqId = (inp as Record<string, unknown>).equation_id as number
-        if (!inputsMap[eqId]) inputsMap[eqId] = []
-        inputsMap[eqId].push(inp)
-      }
-
-      // Batch fetch all outputs for these equations
-      const allOutputs = await db.queryWorkflows(
-        `SELECT * FROM equation_outputs WHERE equation_id IN (${placeholders}) ORDER BY output_order`,
-        eqIds
-      )
-      // Group by equation_id
-      for (const out of allOutputs) {
-        const eqId = (out as Record<string, unknown>).equation_id as number
-        if (!outputsMap[eqId]) outputsMap[eqId] = []
-        outputsMap[eqId].push(out)
-      }
-    }
-
-    // Merge inputs/outputs into equations
-    const equationsWithDetails = equations.map(eq => {
-      const id = (eq as Record<string, unknown>).id as number
-      return {
-        ...eq,
-        inputs: inputsMap[id] || [],
-        outputs: outputsMap[id] || [],
-      }
-    })
-
-    // Get total count
-    let countSql = `SELECT COUNT(*) as cnt FROM equations WHERE is_active = 1`
-    const countParams: unknown[] = []
-    if (domain) { countSql += ` AND domain = ?`; countParams.push(domain) }
-    if (categoryId) { countSql += ` AND category_id = ?`; countParams.push(parseInt(categoryId)) }
-    if (search) {
-      countSql += ` AND (name LIKE ? OR description LIKE ? OR tags LIKE ?)`
-      countParams.push(`%${search}%`, `%${search}%`, `%${search}%`)
-    }
-    const total = await db.queryWorkflows<{ cnt: number }>(countSql, countParams)
+    // Map to the format expected by the frontend
+    const equationsWithDetails = equations.map(eq => ({
+      id: eq.id,
+      equation_id: eq.slug,
+      name: eq.name,
+      description: eq.description,
+      domain: eq.domain,
+      category_id: eq.categoryId,
+      equation: eq.formula,
+      equation_latex: null,
+      equation_pattern: null,
+      difficulty_level: eq.difficulty,
+      tags: eq.tags,
+      is_active: true,
+      category_name: eq.categoryRef?.name || eq.category,
+      category_icon: eq.categoryRef?.icon || null,
+      category_slug: eq.categoryRef?.slug || null,
+      category_color: null,
+      inputs: eq.inputs.map(inp => ({
+        id: inp.id,
+        equation_id: eq.id,
+        name: inp.name,
+        symbol: inp.symbol,
+        unit: inp.unit,
+        default_value: inp.defaultVal,
+        min: inp.min,
+        max: inp.max,
+        step: inp.step,
+        input_order: inp.order,
+      })),
+      outputs: eq.outputs.map(out => ({
+        id: out.id,
+        equation_id: eq.id,
+        name: out.name,
+        symbol: out.symbol,
+        unit: out.unit,
+        formula: out.formula,
+        output_order: out.order,
+      })),
+    }))
 
     return NextResponse.json({
       success: true,
       data: equationsWithDetails,
-      total: total[0]?.cnt || 0,
+      total: totalCount,
       page: Math.floor(offset / limit) + 1,
       limit,
     })

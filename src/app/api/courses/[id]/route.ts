@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { ensureDatabase } from '@/lib/database'
+import { db } from '@/lib/db'
 
 export async function GET(
   request: NextRequest,
@@ -7,13 +7,26 @@ export async function GET(
 ) {
   try {
     const { id } = await params
-    const db = await ensureDatabase()
 
-    // Query course from engmastery.db
-    const course = await db.queryOneEngmastery<Record<string, unknown>>(
-      'SELECT * FROM courses WHERE id = ?',
-      [id]
-    )
+    // Query course from Prisma
+    const course = await db.course.findFirst({
+      where: {
+        OR: [
+          { id: id },
+          { slug: id },
+        ]
+      },
+      include: {
+        modules: {
+          orderBy: { order: 'asc' },
+          include: {
+            lessons: {
+              orderBy: { order: 'asc' },
+            },
+          },
+        },
+      },
+    })
 
     if (!course) {
       return NextResponse.json(
@@ -22,46 +35,62 @@ export async function GET(
       )
     }
 
-    // Get modules for this course
-    const modules = await db.queryEngmastery<Record<string, unknown>>(
-      'SELECT * FROM modules WHERE course_id = ? ORDER BY order_index',
-      [id]
-    )
-
-    // Build full hierarchy: modules → chapters → lessons
-    const modulesWithChapters = await Promise.all(modules.map(async mod => {
-      const chapters = await db.queryEngmastery<Record<string, unknown>>(
-        'SELECT * FROM chapters WHERE module_id = ? ORDER BY order_index',
-        [mod.id as string]
-      )
-
-      const chaptersWithLessons = await Promise.all(chapters.map(async ch => {
-        const lessons = await db.queryEngmastery<Record<string, unknown>>(
-          'SELECT * FROM lessons WHERE chapter_id = ? ORDER BY order_index',
-          [ch.id as string]
-        )
-
-        // Attach quiz for each lesson
-        const lessonsWithQuiz = await Promise.all(lessons.map(async lesson => {
-          const quiz = await db.queryOneEngmastery<Record<string, unknown>>(
-            'SELECT * FROM quizzes WHERE lesson_id = ?',
-            [lesson.id as string]
-          )
-          return {
-            ...lesson,
-            quiz: quiz ? (typeof quiz.questions === 'string' ? JSON.parse(quiz.questions) : quiz.questions) : [],
-          }
-        }))
-
-        return { ...ch, lessons: lessonsWithQuiz }
+    // Build full hierarchy: modules → lessons
+    // Note: Prisma schema has CourseModule → Lesson (no chapters layer)
+    // The old engmastery.db had modules → chapters → lessons + quizzes
+    // We map CourseModule directly to modules, and create a virtual chapter per module
+    const modulesWithLessons = course.modules.map(mod => {
+      const lessonsWithQuiz = mod.lessons.map(lesson => ({
+        id: lesson.id,
+        title: lesson.title,
+        description: lesson.description,
+        type: lesson.type,
+        content: lesson.content,
+        duration: lesson.duration,
+        order_index: lesson.order,
+        is_free: lesson.isFree,
+        module_id: lesson.moduleId,
+        quiz: [], // No quiz data in Prisma
       }))
 
-      return { ...mod, chapters: chaptersWithLessons }
-    }))
+      // Create a virtual chapter wrapping the module's lessons
+      // to maintain compatibility with the old chapters-based structure
+      const chapter = {
+        id: mod.id,
+        title: mod.title,
+        description: mod.description,
+        order_index: mod.order,
+        module_id: mod.courseId,
+        lessons: lessonsWithQuiz,
+      }
+
+      return {
+        id: mod.id,
+        title: mod.title,
+        description: mod.description,
+        order_index: mod.order,
+        duration: mod.duration,
+        course_id: mod.courseId,
+        chapters: [chapter],
+      }
+    })
 
     return NextResponse.json({
       success: true,
-      data: { ...course, modules: modulesWithChapters }
+      data: {
+        id: course.id,
+        title: course.title,
+        slug: course.slug,
+        description: course.description,
+        discipline: course.domain,
+        level: course.level,
+        duration: course.duration,
+        icon: course.icon,
+        image: course.image,
+        rating: course.rating,
+        enrolled: course.enrolled,
+        modules: modulesWithLessons,
+      }
     })
   } catch (error) {
     console.error('Course detail API error:', error)

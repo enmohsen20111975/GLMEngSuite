@@ -1,9 +1,8 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { ThemeProvider } from "next-themes";
 import "./globals.css";
 import { Toaster } from "@/components/ui/sonner";
-import { AppShell } from "@/components/app-shell";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -16,6 +15,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"),
   title: "EngiSuite Analytics - Engineering Calculation Platform",
   description: "Professional engineering calculation, pipeline, and learning platform. Solve equations, run multi-step calculations, and advance your engineering knowledge.",
   keywords: ["engineering", "calculations", "analytics", "pipelines", "learning"],
@@ -26,6 +26,20 @@ export const metadata: Metadata = {
   openGraph: {
     images: ["/og-image.png"],
   },
+  manifest: "/manifest.json",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "default",
+    title: "EngiSuite",
+  },
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
+  themeColor: "#10b981",
 };
 
 export default function RootLayout({
@@ -44,9 +58,7 @@ export default function RootLayout({
           enableSystem
           disableTransitionOnChange
         >
-          <AppShell>
-            {children}
-          </AppShell>
+          {children}
           <Toaster />
         </ThemeProvider>
       </body>

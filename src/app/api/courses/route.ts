@@ -1,73 +1,85 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { ensureDatabase } from '@/lib/database'
+import { db } from '@/lib/db'
 
 export async function GET(request: NextRequest) {
   try {
-    const db = await ensureDatabase()
     const { searchParams } = new URL(request.url)
     const domain = searchParams.get('domain')
     const search = searchParams.get('search')
 
-    // Query courses from engmastery.db
-    let sql = `SELECT c.* FROM courses c WHERE 1=1`
-    const params: unknown[] = []
-
+    // Build where clause
+    const where: Record<string, unknown> = {}
     if (domain) {
-      sql += ` AND c.discipline = ?`
-      params.push(domain)
+      where.domain = domain
     }
     if (search) {
-      sql += ` AND (c.title LIKE ? OR c.description LIKE ?)`
-      params.push(`%${search}%`, `%${search}%`)
+      where.OR = [
+        { title: { contains: search } },
+        { description: { contains: search } },
+      ]
     }
 
-    sql += ` ORDER BY c.id`
-    const courses = await db.queryEngmastery(sql, params)
+    // Fetch courses with full hierarchy
+    const courses = await db.course.findMany({
+      where,
+      include: {
+        modules: {
+          orderBy: { order: 'asc' },
+          include: {
+            lessons: {
+              orderBy: { order: 'asc' },
+            },
+          },
+        },
+      },
+      orderBy: { order: 'asc' },
+    })
 
-    // Enrich each course with module/lesson counts and full hierarchy
-    const coursesWithStats = await Promise.all(courses.map(async course => {
-      const c = course as Record<string, unknown>
-      const courseId = c.id as string
-
-      // Get modules
-      const modules = await db.queryEngmastery<Record<string, unknown>>(
-        'SELECT * FROM modules WHERE course_id = ? ORDER BY order_index',
-        [courseId]
-      )
-
-      // Count lessons across all modules
+    // Map to the format expected by the frontend (which expects the old engmastery.db format)
+    const coursesWithStats = courses.map(course => {
       let totalLessons = 0
-      const modulesWithLessons = await Promise.all(modules.map(async mod => {
-        const chapters = await db.queryEngmastery<Record<string, unknown>>(
-          'SELECT * FROM chapters WHERE module_id = ? ORDER BY order_index',
-          [mod.id as string]
-        )
-
-        let moduleLessonCount = 0
-        const chaptersWithLessons = await Promise.all(chapters.map(async ch => {
-          const lessons = await db.queryEngmastery<Record<string, unknown>>(
-            'SELECT * FROM lessons WHERE chapter_id = ? ORDER BY order_index',
-            [ch.id as string]
-          )
-          moduleLessonCount += lessons.length
-          return { ...ch, lessons }
-        }))
-
-        totalLessons += moduleLessonCount
+      const modulesWithLessons = course.modules.map(mod => {
+        totalLessons += mod.lessons.length
         return {
-          ...mod,
-          chapters: chaptersWithLessons,
-          lesson_count: moduleLessonCount,
+          id: mod.id,
+          title: mod.title,
+          description: mod.description,
+          order_index: mod.order,
+          duration: mod.duration,
+          course_id: mod.courseId,
+          lesson_count: mod.lessons.length,
+          lessons: mod.lessons.map(lesson => ({
+            id: lesson.id,
+            title: lesson.title,
+            description: lesson.description,
+            type: lesson.type,
+            content: lesson.content,
+            duration: lesson.duration,
+            order_index: lesson.order,
+            is_free: lesson.isFree,
+            module_id: lesson.moduleId,
+          })),
         }
-      }))
+      })
 
       return {
-        ...c,
-        module_count: modules.length,
+        id: course.id,
+        title: course.title,
+        slug: course.slug,
+        description: course.description,
+        discipline: course.domain,
+        level: course.level,
+        duration: course.duration,
+        icon: course.icon,
+        image: course.image,
+        rating: course.rating,
+        enrolled: course.enrolled,
+        order_index: course.order,
+        module_count: course.modules.length,
         lesson_count: totalLessons,
         modules: modulesWithLessons,
       }
-    }))
+    })
 
     return NextResponse.json({ success: true, data: coursesWithStats })
   } catch (error) {

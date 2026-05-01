@@ -1,32 +1,43 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { ensureDatabase } from '@/lib/database'
+import { db } from '@/lib/db'
 
 export async function GET(request: NextRequest) {
   try {
-    const db = await ensureDatabase()
     const { searchParams } = new URL(request.url)
     const domain = searchParams.get('domain')
 
-    let sql = `
-      SELECT
-        ec.id, ec.name, ec.slug, ec.description, ec.domain,
-        ec.parent_id, ec.display_order, ec.icon, ec.color,
-        COUNT(e.id) as equation_count
-      FROM equation_categories ec
-      LEFT JOIN equations e ON ec.id = e.category_id AND e.is_active = 1
-    `
-    const params: unknown[] = []
-
+    // Build where clause
+    const where: Record<string, unknown> = {}
     if (domain) {
-      sql += ` WHERE ec.domain = ?`
-      params.push(domain)
+      where.domain = domain
     }
 
-    sql += ` GROUP BY ec.id ORDER BY ec.display_order, ec.name`
+    // Fetch categories with equation counts
+    const categories = await db.equationCategory.findMany({
+      where,
+      include: {
+        _count: { select: { equations: true } },
+      },
+      orderBy: [
+        { order: 'asc' },
+        { name: 'asc' },
+      ],
+    })
 
-    const categories = await db.queryWorkflows(sql, params)
+    const mapped = categories.map(cat => ({
+      id: cat.id,
+      name: cat.name,
+      slug: cat.slug,
+      description: cat.description,
+      domain: cat.domain,
+      parent_id: null,
+      display_order: cat.order,
+      icon: cat.icon,
+      color: null,
+      equation_count: cat._count.equations,
+    }))
 
-    return NextResponse.json({ success: true, data: categories })
+    return NextResponse.json({ success: true, data: mapped })
   } catch (error) {
     console.error('Categories API error:', error)
     return NextResponse.json(

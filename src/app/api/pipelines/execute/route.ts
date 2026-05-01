@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { ensureDatabase } from '@/lib/database'
-import { getCalculationEngine } from '@/lib/calculation-engine'
-import { getPipelineById, ENGINEERING_PIPELINES } from '@/lib/engineering-pipelines'
+import { db } from '@/lib/db'
+import { getPipelineById } from '@/lib/engineering-pipelines'
 
 export async function POST(request: NextRequest) {
   try {
@@ -74,17 +73,120 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    // Fall back to DB pipeline using calculation engine
-    const db = await ensureDatabase()
-    const engine = getCalculationEngine()
-    const result = engine.executePipeline(pipelineId, inputs)
+    // Fall back to DB pipeline from Prisma
+    const pipeline = await db.calculationPipeline.findFirst({
+      where: {
+        OR: [
+          { id: pipelineId },
+          { slug: pipelineId },
+        ]
+      },
+      include: { steps: { orderBy: { order: 'asc' } } },
+    })
+
+    if (!pipeline) {
+      return NextResponse.json(
+        { success: false, error: 'Pipeline not found' },
+        { status: 404 }
+      )
+    }
+
+    // Execute DB pipeline steps sequentially
+    const stepResults: Array<{
+      step_number: number
+      step_name: string
+      inputs: Record<string, number | string>
+      outputs: Record<string, number | string>
+      formula: string | null
+      success: boolean
+      error?: string
+    }> = []
+
+    const ctx: Record<string, number | string> = { ...inputs }
+
+    for (const step of pipeline.steps) {
+      const inputSchema: Record<string, { unit?: string; label?: string; default?: number }> =
+        step.inputSchema ? JSON.parse(step.inputSchema) : {}
+
+      const stepInputs: Record<string, number | string> = {}
+      for (const [key, schema] of Object.entries(inputSchema)) {
+        const val = ctx[key] ?? inputs[key] ?? schema.default
+        if (val !== undefined) stepInputs[key] = val
+      }
+
+      if (!step.formula) {
+        stepResults.push({
+          step_number: step.order,
+          step_name: step.name,
+          inputs: stepInputs,
+          outputs: {},
+          formula: null,
+          success: true,
+        })
+        continue
+      }
+
+      try {
+        // Simple formula evaluation using Function constructor
+        const evalContext: Record<string, number> = {}
+        for (const [k, v] of Object.entries(stepInputs)) {
+          const num = Number(v)
+          if (!isNaN(num)) evalContext[k] = num
+        }
+
+        // Parse formula: handle statements like "I = P / (sqrt(3) * V * PF)"
+        const formula = step.formula
+        const statements = formula.split(';').map(s => s.trim()).filter(Boolean)
+        const outputs: Record<string, number | string> = {}
+
+        for (const stmt of statements) {
+          if (stmt.includes('=') && !stmt.includes('==')) {
+            const eqIdx = stmt.indexOf('=')
+            const varName = stmt.substring(0, eqIdx).trim()
+            const expr = stmt.substring(eqIdx + 1).trim()
+            try {
+              const fn = new Function(...Object.keys(evalContext), `sqrt=Math.sqrt;pow=Math.pow;abs=Math.abs;round=Math.round;ceil=Math.ceil;floor=Math.floor;PI=Math.PI;return ${expr}`)
+              const val = fn(...Object.values(evalContext))
+              if (typeof val === 'number' && isFinite(val)) {
+                evalContext[varName] = val
+                outputs[varName] = val
+                ctx[varName] = val
+              }
+            } catch {
+              // Skip unparseable statements
+            }
+          }
+        }
+
+        stepResults.push({
+          step_number: step.order,
+          step_name: step.name,
+          inputs: stepInputs,
+          outputs,
+          formula: step.formula,
+          success: true,
+        })
+      } catch (err: unknown) {
+        stepResults.push({
+          step_number: step.order,
+          step_name: step.name,
+          inputs: stepInputs,
+          outputs: {},
+          formula: step.formula,
+          success: false,
+          error: err instanceof Error ? err.message : String(err),
+        })
+        break
+      }
+    }
 
     return NextResponse.json({
-      success: result.success,
+      success: true,
       data: {
         pipeline_id: pipelineId,
+        pipeline_name: pipeline.name,
         is_local: false,
-        ...result,
+        steps: stepResults,
       }
     })
   } catch (error) {

@@ -1,32 +1,41 @@
 'use client'
 
 import { Search, Menu, X } from 'lucide-react'
+import { usePathname } from 'next/navigation'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { useActiveSection } from '@/stores/active-section-store'
 
 interface HeaderProps {
   onToggleSidebar: () => void
   sidebarOpen: boolean
 }
 
-export function Header({ onToggleSidebar, sidebarOpen }: HeaderProps) {
-  const { activeSection } = useActiveSection()
+const sectionTitles: Record<string, string> = {
+  '/dashboard': 'Dashboard',
+  '/calculators': 'Engineering Calculators',
+  '/pipelines': 'Calculation Pipelines',
+  '/workflow': 'Workflow Builder',
+  '/unit-converter': 'Unit Converter',
+  '/data-analysis': 'Data Analysis',
+  '/pdf-editor': 'PDF Editor',
+  '/logic-simulator': 'Logic Simulator',
+  '/electrical-simulator': 'Electrical Simulator',
+  '/diagram-studio': 'Diagram Studio',
+  '/learning': 'Learning Platform',
+  '/settings': 'Settings',
+}
 
-  const sectionTitles: Record<string, string> = {
-    dashboard: 'Dashboard',
-    calculators: 'Engineering Calculators',
-    pipelines: 'Calculation Pipelines',
-    workflow: 'Workflow Builder',
-    'unit-converter': 'Unit Converter',
-    'data-analysis': 'Data Analysis',
-    'pdf-editor': 'PDF Editor',
-    'logic-simulator': 'Logic Simulator',
-    'electrical-simulator': 'Electrical Simulator',
-    'diagram-studio': 'Diagram Studio',
-    learning: 'Learning Platform',
-    settings: 'Settings',
+export function Header({ onToggleSidebar, sidebarOpen }: HeaderProps) {
+  const pathname = usePathname()
+
+  const getTitle = () => {
+    // Check for exact match first
+    if (sectionTitles[pathname]) return sectionTitles[pathname]
+    // Check for prefix match (e.g., /calculators/ohms-law)
+    const baseSegment = '/' + pathname.split('/').filter(Boolean)[0]
+    if (sectionTitles[baseSegment]) return sectionTitles[baseSegment]
+    return 'EngiSuite Analytics'
   }
 
   return (
@@ -43,7 +52,7 @@ export function Header({ onToggleSidebar, sidebarOpen }: HeaderProps) {
 
       <div className="flex-1">
         <h1 className="text-lg font-semibold hidden sm:block">
-          {sectionTitles[activeSection] || 'EngiSuite Analytics'}
+          {getTitle()}
         </h1>
       </div>
 

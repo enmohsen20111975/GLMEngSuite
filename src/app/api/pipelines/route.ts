@@ -1,37 +1,49 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { ensureDatabase } from '@/lib/database'
+import { db } from '@/lib/db'
 import { ENGINEERING_PIPELINES } from '@/lib/engineering-pipelines'
 
 export async function GET(request: NextRequest) {
   try {
-    const db = await ensureDatabase()
     const { searchParams } = new URL(request.url)
     const domain = searchParams.get('domain')
     const search = searchParams.get('search')
 
-    // DB pipelines from workflows.db with step counts
-    let sql = `
-      SELECT cp.id, cp.pipeline_id, cp.name, cp.description, cp.domain,
-             cp.standard_id, cp.version, cp.estimated_time, cp.difficulty_level,
-             cp.tags, cp.is_active,
-             COUNT(cs.id) as step_count
-      FROM calculation_pipelines cp
-      LEFT JOIN calculation_steps cs ON cp.id = cs.pipeline_id AND cs.is_active = 1
-      WHERE cp.is_active = 1
-    `
-    const params: unknown[] = []
-
+    // Build where clause for Prisma query
+    const where: Record<string, unknown> = {}
     if (domain) {
-      sql += ` AND cp.domain = ?`
-      params.push(domain)
+      where.domain = domain
     }
     if (search) {
-      sql += ` AND (cp.name LIKE ? OR cp.description LIKE ?)`
-      params.push(`%${search}%`, `%${search}%`)
+      where.OR = [
+        { name: { contains: search } },
+        { description: { contains: search } },
+      ]
     }
 
-    sql += ` GROUP BY cp.id ORDER BY cp.name`
-    const dbPipelines = await db.queryWorkflows(sql, params)
+    // DB pipelines from Prisma with step counts
+    const dbPipelines = await db.calculationPipeline.findMany({
+      where,
+      include: { steps: true },
+      orderBy: { name: 'asc' },
+    })
+
+    const dbPipelineData = dbPipelines.map(p => ({
+      id: p.id,
+      pipeline_id: p.slug,
+      name: p.name,
+      description: p.description,
+      domain: p.domain,
+      standard_id: null,
+      version: null,
+      estimated_time: null,
+      difficulty_level: p.difficulty,
+      tags: p.tags,
+      is_active: true,
+      step_count: p.steps.length,
+      is_local: false,
+      icon: p.icon,
+      category: p.category,
+    }))
 
     // Local engineering pipelines (hardcoded)
     const localPipelines = ENGINEERING_PIPELINES.map(p => ({
@@ -49,11 +61,11 @@ export async function GET(request: NextRequest) {
 
     // Combine DB + local pipelines
     let allPipelines = [
-      ...dbPipelines.map(p => ({ ...p, is_local: false })),
+      ...dbPipelineData,
       ...localPipelines,
     ]
 
-    // Apply filters to combined set
+    // Apply filters to combined set (in case domain/search wasn't in Prisma where)
     if (domain) {
       allPipelines = allPipelines.filter(p => p.domain === domain)
     }

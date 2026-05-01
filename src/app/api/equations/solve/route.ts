@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { ensureDatabase } from '@/lib/database'
+import { db } from '@/lib/db'
 import { evaluateFormula } from '@/lib/calculation-engine'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -20,8 +20,17 @@ interface SolveResponse {
   error?: string
 }
 
+interface EquationVariable {
+  symbol: string
+  name: string
+  unit: string | null
+  default_value: number | null
+  description: string | null
+  formula?: string | null
+}
+
 interface EquationInfo {
-  id: number
+  id: string
   equation_id: string
   name: string
   formula: string | null
@@ -30,15 +39,6 @@ interface EquationInfo {
   description: string | null
   inputs: EquationVariable[]
   outputs: EquationVariable[]
-}
-
-interface EquationVariable {
-  symbol: string
-  name: string
-  unit: string | null
-  default_value: number | null
-  description: string | null
-  formula?: string | null
 }
 
 // ─── GET handler – equation info ────────────────────────────────────────────
@@ -55,13 +55,19 @@ export async function GET(request: NextRequest) {
       )
     }
 
-    const db = await ensureDatabase()
-
-    // Load equation from workflows database
-    const equation = await db.queryOneWorkflow<Record<string, unknown>>(
-      `SELECT * FROM equations WHERE id = ? OR equation_id = ?`,
-      [Number(equationId) || 0, equationId]
-    )
+    // Load equation from Prisma
+    const equation = await db.equation.findFirst({
+      where: {
+        OR: [
+          { id: equationId },
+          { slug: equationId },
+        ]
+      },
+      include: {
+        inputs: { orderBy: { order: 'asc' } },
+        outputs: { orderBy: { order: 'asc' } },
+      },
+    })
 
     if (!equation) {
       return NextResponse.json(
@@ -70,45 +76,31 @@ export async function GET(request: NextRequest) {
       )
     }
 
-    const eqId = equation.id as number
-
-    // Load input definitions
-    const eqInputs = await db.queryWorkflows<Record<string, unknown>>(
-      `SELECT * FROM equation_inputs WHERE equation_id = ? ORDER BY input_order`,
-      [eqId]
-    )
-
-    // Load output definitions
-    const eqOutputs = await db.queryWorkflows<Record<string, unknown>>(
-      `SELECT * FROM equation_outputs WHERE equation_id = ? ORDER BY output_order`,
-      [eqId]
-    )
-
-    const inputs: EquationVariable[] = eqInputs.map((inp) => ({
-      symbol: (inp.symbol as string) || (inp.name as string),
-      name: inp.name as string,
-      unit: (inp.unit as string) || null,
-      default_value: inp.default_value != null ? Number(inp.default_value) : null,
-      description: (inp.description as string) || null,
+    const inputs: EquationVariable[] = equation.inputs.map(inp => ({
+      symbol: inp.symbol || inp.name,
+      name: inp.name,
+      unit: inp.unit || null,
+      default_value: inp.defaultVal != null ? Number(inp.defaultVal) : null,
+      description: null,
     }))
 
-    const outputs: EquationVariable[] = eqOutputs.map((out) => ({
-      symbol: (out.symbol as string) || (out.name as string),
-      name: out.name as string,
-      unit: (out.unit as string) || null,
-      default_value: out.default_value != null ? Number(out.default_value) : null,
-      description: (out.description as string) || null,
-      formula: (out.formula as string) || null,
+    const outputs: EquationVariable[] = equation.outputs.map(out => ({
+      symbol: out.symbol || out.name,
+      name: out.name,
+      unit: out.unit || null,
+      default_value: null,
+      description: null,
+      formula: out.formula || null,
     }))
 
     const info: EquationInfo = {
-      id: eqId,
-      equation_id: equation.equation_id as string,
-      name: equation.name as string,
-      formula: (equation.equation as string) || (equation.formula as string) || null,
-      equation_latex: (equation.equation_latex as string) || null,
-      domain: (equation.domain as string) || null,
-      description: (equation.description as string) || null,
+      id: equation.id,
+      equation_id: equation.slug,
+      name: equation.name,
+      formula: equation.formula || null,
+      equation_latex: null,
+      domain: equation.domain || null,
+      description: equation.description || null,
       inputs,
       outputs,
     }
@@ -127,7 +119,6 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const db = await ensureDatabase()
     const body: SolveRequest = await request.json()
     const { equation_id, formula: bodyFormula, values = {}, solve_for } = body
 
@@ -151,12 +142,20 @@ export async function POST(request: NextRequest) {
     let inputDefs: EquationVariable[] = []
     let outputDefs: EquationVariable[] = []
 
-    // ── Load equation from DB if equation_id provided ──
+    // ── Load equation from Prisma if equation_id provided ──
     if (equation_id) {
-      const equation = await db.queryOneWorkflow<Record<string, unknown>>(
-        `SELECT * FROM equations WHERE id = ? OR equation_id = ?`,
-        [Number(equation_id) || 0, String(equation_id)]
-      )
+      const equation = await db.equation.findFirst({
+        where: {
+          OR: [
+            { id: String(equation_id) },
+            { slug: String(equation_id) },
+          ]
+        },
+        include: {
+          inputs: { orderBy: { order: 'asc' } },
+          outputs: { orderBy: { order: 'asc' } },
+        },
+      })
 
       if (!equation) {
         return NextResponse.json(
@@ -165,33 +164,23 @@ export async function POST(request: NextRequest) {
         )
       }
 
-      const eqId = equation.id as number
-      formula = formula || (equation.equation as string) || (equation.formula as string) || ''
+      formula = formula || equation.formula || ''
 
-      const eqInputs = await db.queryWorkflows<Record<string, unknown>>(
-        `SELECT * FROM equation_inputs WHERE equation_id = ? ORDER BY input_order`,
-        [eqId]
-      )
-      const eqOutputs = await db.queryWorkflows<Record<string, unknown>>(
-        `SELECT * FROM equation_outputs WHERE equation_id = ? ORDER BY output_order`,
-        [eqId]
-      )
-
-      inputDefs = eqInputs.map((inp) => ({
-        symbol: (inp.symbol as string) || (inp.name as string),
-        name: inp.name as string,
-        unit: (inp.unit as string) || null,
-        default_value: inp.default_value != null ? Number(inp.default_value) : null,
-        description: (inp.description as string) || null,
+      inputDefs = equation.inputs.map(inp => ({
+        symbol: inp.symbol || inp.name,
+        name: inp.name,
+        unit: inp.unit || null,
+        default_value: inp.defaultVal != null ? Number(inp.defaultVal) : null,
+        description: null,
       }))
 
-      outputDefs = eqOutputs.map((out) => ({
-        symbol: (out.symbol as string) || (out.name as string),
-        name: out.name as string,
-        unit: (out.unit as string) || null,
-        default_value: out.default_value != null ? Number(out.default_value) : null,
-        description: (out.description as string) || null,
-        formula: (out.formula as string) || null,
+      outputDefs = equation.outputs.map(out => ({
+        symbol: out.symbol || out.name,
+        name: out.name,
+        unit: out.unit || null,
+        default_value: null,
+        description: null,
+        formula: out.formula || null,
       }))
     }
 
@@ -222,8 +211,8 @@ export async function POST(request: NextRequest) {
     const statements = parseFormulaStatements(formula)
 
     // ── Determine the set of input and output variable symbols ──
-    const inputSymbols = new Set(inputDefs.map((d) => d.symbol))
-    const outputSymbols = new Set(outputDefs.map((d) => d.symbol))
+    const inputSymbols = new Set(inputDefs.map(d => d.symbol))
+    const outputSymbols = new Set(outputDefs.map(d => d.symbol))
 
     // If no DB definitions, infer from formula
     if (inputSymbols.size === 0 && outputSymbols.size === 0) {
@@ -232,7 +221,6 @@ export async function POST(request: NextRequest) {
           outputSymbols.add(stmt.outputVar)
         }
       }
-      // Variables used in expressions that are not output vars are input vars
       for (const stmt of statements) {
         const varsInExpr = extractVariables(stmt.expression)
         for (const v of varsInExpr) {
@@ -247,15 +235,12 @@ export async function POST(request: NextRequest) {
     let targetVar = solve_for || null
 
     if (!targetVar) {
-      // Auto-detect: find the first variable that is NOT in the provided values
-      // Prefer output variables first
       for (const sym of outputSymbols) {
         if (!(sym in values)) {
           targetVar = sym
           break
         }
       }
-      // If no unsolved output, check inputs
       if (!targetVar) {
         for (const sym of inputSymbols) {
           if (!(sym in values)) {
@@ -267,7 +252,6 @@ export async function POST(request: NextRequest) {
     }
 
     if (!targetVar) {
-      // All variables are known – just evaluate outputs
       const result = evaluateAllOutputs(statements, context, outputDefs)
       return NextResponse.json({
         success: true,
@@ -279,7 +263,6 @@ export async function POST(request: NextRequest) {
     }
 
     // ── Attempt direct evaluation ──
-    // Case 1: targetVar is an output variable and all expression inputs are known
     const directResult = tryDirectEvaluation(targetVar, statements, context, outputDefs)
     if (directResult !== null) {
       return NextResponse.json({
@@ -292,7 +275,6 @@ export async function POST(request: NextRequest) {
     }
 
     // ── Attempt numerical solving (bisection) ──
-    // targetVar is an input variable (reverse calculation)
     const numericalResult = tryNumericalSolving(targetVar, statements, context, outputDefs)
     if (numericalResult !== null) {
       return NextResponse.json({
@@ -334,7 +316,6 @@ export async function POST(request: NextRequest) {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/** Built-in math/engineering function names to exclude from variable detection */
 const BUILTIN_NAMES: Record<string, boolean> = {
   sqrt: true, sin: true, cos: true, tan: true, asin: true, acos: true, atan: true,
   log: true, ln: true, exp: true, pow: true, abs: true, round: true, ceil: true,
@@ -353,9 +334,8 @@ interface FormulaStatement {
   expression: string
 }
 
-/** Parse a formula string into individual assignment statements */
 function parseFormulaStatements(formula: string): FormulaStatement[] {
-  const formulas = formula.replace(/;/g, '\n').split('\n').map((f) => f.trim()).filter(Boolean)
+  const formulas = formula.replace(/;/g, '\n').split('\n').map(f => f.trim()).filter(Boolean)
   const statements: FormulaStatement[] = []
 
   for (const f of formulas) {
@@ -374,10 +354,8 @@ function parseFormulaStatements(formula: string): FormulaStatement[] {
   return statements
 }
 
-/** Extract variable names from an expression using word-boundary matching */
 function extractVariables(expression: string): string[] {
   const vars: string[] = []
-  // Match word-boundary identifiers (letters, digits, underscore, starting with letter/underscore)
   const regex = /\b([a-zA-Z_]\w*)\b/g
   let match: RegExpExecArray | null
   while ((match = regex.exec(expression)) !== null) {
@@ -389,7 +367,6 @@ function extractVariables(expression: string): string[] {
   return vars
 }
 
-/** Evaluate all output variables from statements and output definitions */
 function evaluateAllOutputs(
   statements: FormulaStatement[],
   context: Record<string, number>,
@@ -398,7 +375,6 @@ function evaluateAllOutputs(
   const result: Record<string, number> = {}
   const ctx = { ...context }
 
-  // Evaluate statements in order
   for (const stmt of statements) {
     if (stmt.outputVar) {
       try {
@@ -411,7 +387,6 @@ function evaluateAllOutputs(
     }
   }
 
-  // Evaluate output-specific formulas
   for (const out of outputDefs) {
     if (out.formula && out.formula.trim()) {
       try {
@@ -429,45 +404,34 @@ function evaluateAllOutputs(
   return result
 }
 
-/**
- * Try direct evaluation for a target variable.
- * Returns the value if the target can be computed directly, null otherwise.
- */
 function tryDirectEvaluation(
   targetVar: string,
   statements: FormulaStatement[],
   context: Record<string, number>,
   outputDefs: EquationVariable[]
 ): number | null {
-  // Strategy 1: targetVar is the output of a formula statement
   for (const stmt of statements) {
     if (stmt.outputVar === targetVar) {
       try {
         const val = evaluateFormula(stmt.expression, context)
-        if (isFinite(val)) {
-          return val
-        }
-      } catch {
-        // Expression may reference unknowns – fall through to numerical
-      }
-    }
-  }
-
-  // Strategy 2: targetVar has an output-specific formula
-  for (const out of outputDefs) {
-    if (out.symbol === targetVar && out.formula && out.formula.trim()) {
-      try {
-        const val = evaluateFormula(out.formula, context)
-        if (isFinite(val)) {
-          return val
-        }
+        if (isFinite(val)) return val
       } catch {
         // fall through
       }
     }
   }
 
-  // Strategy 3: evaluate all statements sequentially and check if target appears
+  for (const out of outputDefs) {
+    if (out.symbol === targetVar && out.formula && out.formula.trim()) {
+      try {
+        const val = evaluateFormula(out.formula, context)
+        if (isFinite(val)) return val
+      } catch {
+        // fall through
+      }
+    }
+  }
+
   const ctx = { ...context }
   let found = false
   let foundValue = 0
@@ -476,35 +440,27 @@ function tryDirectEvaluation(
     if (stmt.outputVar) {
       try {
         const val = evaluateFormula(stmt.expression, ctx)
-        if (stmt.outputVar === targetVar) {
-          if (isFinite(val)) {
-            found = true
-            foundValue = val
-          }
+        if (stmt.outputVar === targetVar && isFinite(val)) {
+          found = true
+          foundValue = val
         }
         ctx[stmt.outputVar] = val
       } catch {
-        // If this statement defines our target and we can't evaluate it, direct won't work
-        if (stmt.outputVar === targetVar) {
-          return null
-        }
+        if (stmt.outputVar === targetVar) return null
       }
     }
   }
 
-  // Also try output defs
   for (const out of outputDefs) {
-    if (out.symbol === targetVar && !(targetVar in ctx)) {
-      if (out.formula && out.formula.trim()) {
-        try {
-          const val = evaluateFormula(out.formula, ctx)
-          if (isFinite(val)) {
-            found = true
-            foundValue = val
-          }
-        } catch {
-          // skip
+    if (out.symbol === targetVar && !(targetVar in ctx) && out.formula?.trim()) {
+      try {
+        const val = evaluateFormula(out.formula, ctx)
+        if (isFinite(val)) {
+          found = true
+          foundValue = val
         }
+      } catch {
+        // skip
       }
     }
   }
@@ -512,44 +468,29 @@ function tryDirectEvaluation(
   return found ? foundValue : null
 }
 
-/**
- * Try numerical solving using bisection method.
- * Used for reverse calculation: solving for an input variable when the output is known.
- */
 function tryNumericalSolving(
   targetVar: string,
   statements: FormulaStatement[],
   context: Record<string, number>,
   outputDefs: EquationVariable[]
 ): number | null {
-  // Find a statement whose output is known (provided in values or already computable)
-  // and whose expression references the targetVar.
-  // That gives us: knownOutput = f(targetVar, otherKnowns)
-  // We solve: f(targetVar, otherKnowns) - knownOutput = 0
-
-  // Collect known output values (from user-provided values, not computed)
   const knownOutputs: { symbol: string; value: number }[] = []
 
-  // Check which outputs are known from the provided values
   for (const out of outputDefs) {
     if (out.symbol in context) {
       knownOutputs.push({ symbol: out.symbol, value: context[out.symbol] })
     }
   }
 
-  // Also check statement outputs that are in the context
   for (const stmt of statements) {
     if (stmt.outputVar && stmt.outputVar in context) {
-      // Avoid duplicate
-      if (!knownOutputs.some((ko) => ko.symbol === stmt.outputVar)) {
-        knownOutputs.push({ symbol: stmt.outputVar, value: context[stmt.outputVar] })
+      if (!knownOutputs.some(ko => ko.symbol === stmt.outputVar)) {
+        knownOutputs.push({ symbol: stmt.outputVar, value: context[stmt.outputVar!] })
       }
     }
   }
 
-  // If no known outputs, try to compute outputs from known inputs and use those as targets
   if (knownOutputs.length === 0) {
-    // Evaluate everything we can without targetVar
     const ctxWithoutTarget = { ...context }
     delete ctxWithoutTarget[targetVar]
 
@@ -557,9 +498,7 @@ function tryNumericalSolving(
       if (stmt.outputVar && stmt.outputVar !== targetVar) {
         try {
           const val = evaluateFormula(stmt.expression, ctxWithoutTarget)
-          if (isFinite(val)) {
-            ctxWithoutTarget[stmt.outputVar] = val
-          }
+          if (isFinite(val)) ctxWithoutTarget[stmt.outputVar] = val
         } catch {
           // skip
         }
@@ -580,49 +519,31 @@ function tryNumericalSolving(
     }
   }
 
-  // Try each known output as a target for bisection
   for (const { symbol: outputSymbol, value: targetValue } of knownOutputs) {
-    // Find the expression that defines this output
-    const matchingStmt = statements.find((s) => s.outputVar === outputSymbol)
-    const matchingOutDef = outputDefs.find((o) => o.symbol === outputSymbol && o.formula)
+    const matchingStmt = statements.find(s => s.outputVar === outputSymbol)
+    const matchingOutDef = outputDefs.find(o => o.symbol === outputSymbol && o.formula)
 
-    // Determine the expression to evaluate
     let expression: string | null = null
-    if (matchingStmt) {
-      expression = matchingStmt.expression
-    } else if (matchingOutDef?.formula) {
-      expression = matchingOutDef.formula
-    }
-
+    if (matchingStmt) expression = matchingStmt.expression
+    else if (matchingOutDef?.formula) expression = matchingOutDef.formula
     if (!expression) continue
 
-    // Check that the expression references the targetVar
     const varsInExpr = extractVariables(expression)
     if (!varsInExpr.includes(targetVar)) continue
 
-    // Build context without the targetVar
     const solveContext: Record<string, number> = { ...context }
     delete solveContext[targetVar]
-    // Also remove the output symbol from context (it's the target of the expression)
     delete solveContext[outputSymbol]
 
-    // Use bisection to solve: expression(context + {targetVar: x}) = targetValue
     const result = bisectionSolve(expression, solveContext, targetVar, targetValue)
-    if (result !== null) {
-      return result
-    }
+    if (result !== null) return result
   }
 
-  // Alternative approach: if the formula is like "V = I * R" and we know V and R,
-  // solve for I using the full statement context
   for (const stmt of statements) {
-    if (!stmt.outputVar) continue
-    if (stmt.outputVar === targetVar) continue // Already tried direct
+    if (!stmt.outputVar || stmt.outputVar === targetVar) continue
 
     const varsInExpr = extractVariables(stmt.expression)
     if (!varsInExpr.includes(targetVar)) continue
-
-    // The output variable should have a known value
     if (!(stmt.outputVar in context)) continue
 
     const targetValue = context[stmt.outputVar]
@@ -631,19 +552,12 @@ function tryNumericalSolving(
     delete solveContext[stmt.outputVar]
 
     const result = bisectionSolve(stmt.expression, solveContext, targetVar, targetValue)
-    if (result !== null) {
-      return result
-    }
+    if (result !== null) return result
   }
 
   return null
 }
 
-/**
- * Bisection method solver.
- * Solves: evaluateFormula(expression, { ...context, [unknownVar]: x }) = targetValue
- * Returns the value of unknownVar, or null if convergence fails.
- */
 function bisectionSolve(
   expression: string,
   knownContext: Record<string, number>,
@@ -661,22 +575,17 @@ function bisectionSolve(
     }
   }
 
-  // Determine reasonable search bounds based on known values
   const knownValues = Object.values(knownContext)
   const maxAbs = knownValues.length > 0
     ? Math.max(...knownValues.map(Math.abs), 1)
     : 1000
 
-  // Start with a wide range and narrow down
   let low = -maxAbs * 1000
   let high = maxAbs * 1000
-
   let fLow = evalAt(low) - targetValue
   let fHigh = evalAt(high) - targetValue
 
-  // Check if root is already bracketed
   if (isNaN(fLow) || isNaN(fHigh)) {
-    // Try smaller ranges
     for (const range of [1e6, 1e4, 1e3, 100, 10, 1, 0.1]) {
       low = -range
       high = range
@@ -688,9 +597,7 @@ function bisectionSolve(
 
   if (isNaN(fLow) || isNaN(fHigh)) return null
 
-  // Try to find bounds where f changes sign
   if (fLow * fHigh > 0) {
-    // Expand bounds progressively
     const expansions = [1e6, 1e4, 1e3, 100, 10, 1, 0.1, 0.01, 0.001]
     let found = false
     for (const scale of expansions) {
@@ -699,55 +606,32 @@ function bisectionSolve(
       fLow = evalAt(low) - targetValue
       fHigh = evalAt(high) - targetValue
       if (isNaN(fLow) || isNaN(fHigh)) continue
-      if (fLow * fHigh <= 0) {
-        found = true
-        break
-      }
+      if (fLow * fHigh <= 0) { found = true; break }
     }
 
     if (!found) {
-      // Try asymmetric bounds based on targetValue
-      if (targetValue > 0) {
-        low = 0
-        high = targetValue * 10 + 100
-      } else {
-        low = targetValue * 10 - 100
-        high = 0
-      }
+      if (targetValue > 0) { low = 0; high = targetValue * 10 + 100 }
+      else { low = targetValue * 10 - 100; high = 0 }
       fLow = evalAt(low) - targetValue
       fHigh = evalAt(high) - targetValue
       if (isNaN(fLow) || isNaN(fHigh) || fLow * fHigh > 0) return null
     }
   }
 
-  // Bisection iteration
   for (let i = 0; i < maxIter; i++) {
     const mid = (low + high) / 2
     const fMid = evalAt(mid) - targetValue
 
-    if (isNaN(fMid)) {
-      // Shrink to the side that produces valid values
-      high = mid
-      continue
-    }
-
+    if (isNaN(fMid)) { high = mid; continue }
     if (Math.abs(fMid) < tolerance) return mid
 
-    if (fMid * fLow < 0) {
-      high = mid
-      fHigh = fMid
-    } else {
-      low = mid
-      fLow = fMid
-    }
+    if (fMid * fLow < 0) { high = mid; fHigh = fMid }
+    else { low = mid; fLow = fMid }
   }
 
-  // Return best approximation even if not fully converged
   const finalMid = (low + high) / 2
   const finalResidual = Math.abs(evalAt(finalMid) - targetValue)
-  if (finalResidual < tolerance * 100) {
-    return finalMid
-  }
+  if (finalResidual < tolerance * 100) return finalMid
 
   return null
 }

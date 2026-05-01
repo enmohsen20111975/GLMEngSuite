@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { ensureDatabase } from '@/lib/database'
+import { db } from '@/lib/db'
 import { getPipelineById } from '@/lib/engineering-pipelines'
 
 export async function GET(
@@ -8,7 +8,6 @@ export async function GET(
 ) {
   try {
     const { id } = await params
-    const db = await ensureDatabase()
 
     // Try local pipeline first (hardcoded engineering pipelines)
     const localPipeline = getPipelineById(id)
@@ -42,11 +41,16 @@ export async function GET(
       })
     }
 
-    // Try DB pipeline from workflows.db
-    const pipeline = await db.queryOneWorkflow<Record<string, unknown>>(
-      'SELECT * FROM calculation_pipelines WHERE id = ? OR pipeline_id = ?',
-      [parseInt(id), id]
-    )
+    // Try DB pipeline from Prisma
+    const pipeline = await db.calculationPipeline.findFirst({
+      where: {
+        OR: [
+          { id: id },
+          { slug: id },
+        ]
+      },
+      include: { steps: { orderBy: { order: 'asc' } } },
+    })
 
     if (!pipeline) {
       return NextResponse.json(
@@ -55,29 +59,29 @@ export async function GET(
       )
     }
 
-    const pipelineDbId = pipeline.id as number
-
-    // Get pipeline steps
-    const steps = await db.queryWorkflows<Record<string, unknown>>(
-      'SELECT * FROM calculation_steps WHERE pipeline_id = ? AND is_active = 1 ORDER BY step_number',
-      [pipelineDbId]
-    )
-
-    // Get dependencies between steps
-    const dependencies = await db.queryWorkflows<Record<string, unknown>>(
-      `SELECT cd.* FROM calculation_dependencies cd
-       JOIN calculation_steps cs ON cd.step_id = cs.id
-       WHERE cs.pipeline_id = ?`,
-      [pipelineDbId]
-    )
-
     return NextResponse.json({
       success: true,
       data: {
-        ...pipeline,
-        is_local: false,
-        steps,
-        dependencies,
+        id: pipeline.id,
+        pipeline_id: pipeline.slug,
+        name: pipeline.name,
+        description: pipeline.description,
+        domain: pipeline.domain,
+        difficulty_level: pipeline.difficulty,
+        icon: pipeline.icon,
+        tags: pipeline.tags,
+        is_local: pipeline.isLocal,
+        steps: pipeline.steps.map(s => ({
+          id: s.id,
+          step_number: s.order,
+          name: s.name,
+          description: s.description,
+          formula: s.formula,
+          input_schema: s.inputSchema ? JSON.parse(s.inputSchema) : null,
+          output_schema: s.outputSchema ? JSON.parse(s.outputSchema) : null,
+          helper_text: s.helperText,
+        })),
+        dependencies: [],
       }
     })
   } catch (error) {

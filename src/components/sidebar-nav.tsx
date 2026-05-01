@@ -1,8 +1,9 @@
 'use client'
 
 import * as React from 'react'
+import Link from 'next/link'
+import { usePathname } from 'next/navigation'
 import { cn } from '@/lib/utils'
-import { useActiveSection, type SectionId } from '@/stores/active-section-store'
 import {
   LayoutDashboard,
   Calculator,
@@ -37,23 +38,23 @@ interface SidebarNavProps {
   onMobileClose: () => void
 }
 
-const navItems: { id: SectionId; label: string; icon: React.ElementType; group: string }[] = [
-  { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, group: 'Overview' },
-  { id: 'calculators', label: 'Calculators', icon: Calculator, group: 'Engineering' },
-  { id: 'pipelines', label: 'Pipelines', icon: GitBranch, group: 'Engineering' },
-  { id: 'workflow', label: 'Workflow Builder', icon: Workflow, group: 'Engineering' },
-  { id: 'unit-converter', label: 'Unit Converter', icon: ArrowLeftRight, group: 'Tools' },
-  { id: 'data-analysis', label: 'Data Analysis', icon: BarChart3, group: 'Tools' },
-  { id: 'pdf-editor', label: 'PDF Editor', icon: FileEdit, group: 'Tools' },
-  { id: 'logic-simulator', label: 'Logic Simulator', icon: CircuitBoard, group: 'Simulators' },
-  { id: 'electrical-simulator', label: 'Electrical Simulator', icon: Microscope, group: 'Simulators' },
-  { id: 'diagram-studio', label: 'Diagram Studio', icon: PenTool, group: 'Simulators' },
-  { id: 'learning', label: 'Learning', icon: GraduationCap, group: 'Resources' },
-  { id: 'settings', label: 'Settings', icon: Settings, group: 'System' },
+const navItems: { id: string; href: string; label: string; icon: React.ElementType; group: string }[] = [
+  { id: 'dashboard', href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, group: 'Overview' },
+  { id: 'calculators', href: '/calculators', label: 'Calculators', icon: Calculator, group: 'Engineering' },
+  { id: 'pipelines', href: '/pipelines', label: 'Pipelines', icon: GitBranch, group: 'Engineering' },
+  { id: 'workflow', href: '/workflow', label: 'Workflow Builder', icon: Workflow, group: 'Engineering' },
+  { id: 'unit-converter', href: '/unit-converter', label: 'Unit Converter', icon: ArrowLeftRight, group: 'Tools' },
+  { id: 'data-analysis', href: '/data-analysis', label: 'Data Analysis', icon: BarChart3, group: 'Tools' },
+  { id: 'pdf-editor', href: '/pdf-editor', label: 'PDF Editor', icon: FileEdit, group: 'Tools' },
+  { id: 'logic-simulator', href: '/logic-simulator', label: 'Logic Simulator', icon: CircuitBoard, group: 'Simulators' },
+  { id: 'electrical-simulator', href: '/electrical-simulator', label: 'Electrical Simulator', icon: Microscope, group: 'Simulators' },
+  { id: 'diagram-studio', href: '/diagram-studio', label: 'Diagram Studio', icon: PenTool, group: 'Simulators' },
+  { id: 'learning', href: '/learning', label: 'Learning', icon: GraduationCap, group: 'Resources' },
+  { id: 'settings', href: '/settings', label: 'Settings', icon: Settings, group: 'System' },
 ]
 
 export function SidebarNav({ collapsed, onToggle, mobileOpen, onMobileClose }: SidebarNavProps) {
-  const { activeSection, setActiveSection } = useActiveSection()
+  const pathname = usePathname()
 
   const groups = navItems.reduce<Record<string, typeof navItems>>((acc, item) => {
     if (!acc[item.group]) acc[item.group] = []
@@ -106,15 +107,10 @@ export function SidebarNav({ collapsed, onToggle, mobileOpen, onMobileClose }: S
                 <div className="space-y-0.5 px-2">
                   {items.map((item) => {
                     const Icon = item.icon
-                    const isActive = activeSection === item.id
+                    const isActive = pathname === item.href || pathname.startsWith(item.href + '/')
 
-                    const button = (
-                      <button
-                        key={item.id}
-                        onClick={() => {
-                          setActiveSection(item.id)
-                          onMobileClose()
-                        }}
+                    const linkContent = (
+                      <span
                         className={cn(
                           'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-150',
                           'hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
@@ -132,19 +128,27 @@ export function SidebarNav({ collapsed, onToggle, mobileOpen, onMobileClose }: S
                         {isActive && !collapsed && (
                           <div className="ml-auto h-1.5 w-1.5 rounded-full bg-emerald-600 dark:bg-emerald-400" />
                         )}
-                      </button>
+                      </span>
                     )
 
                     if (collapsed) {
                       return (
                         <Tooltip key={item.id}>
-                          <TooltipTrigger asChild>{button}</TooltipTrigger>
+                          <TooltipTrigger asChild>
+                            <Link href={item.href} onClick={onMobileClose}>
+                              {linkContent}
+                            </Link>
+                          </TooltipTrigger>
                           <TooltipContent side="right" className="font-medium">{item.label}</TooltipContent>
                         </Tooltip>
                       )
                     }
 
-                    return button
+                    return (
+                      <Link key={item.id} href={item.href} onClick={onMobileClose}>
+                        {linkContent}
+                      </Link>
+                    )
                   })}
                 </div>
               </div>

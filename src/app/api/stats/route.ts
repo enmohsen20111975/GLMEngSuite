@@ -1,67 +1,49 @@
 import { NextResponse } from 'next/server'
-import { ensureDatabase } from '@/lib/database'
+import { db } from '@/lib/db'
 
 export async function GET() {
   try {
-    const db = await ensureDatabase()
-
-    // Workflows DB counts (lightweight - 2.6MB)
-    const [eqCount, pipelineCount, categoryCount, standardCount, domainDist, pipelineDomainDist] = await Promise.all([
-      db.queryWorkflows<{ cnt: number }>('SELECT COUNT(*) as cnt FROM equations WHERE is_active = 1'),
-      db.queryWorkflows<{ cnt: number }>('SELECT COUNT(*) as cnt FROM calculation_pipelines WHERE is_active = 1'),
-      db.queryWorkflows<{ cnt: number }>('SELECT COUNT(*) as cnt FROM equation_categories'),
-      db.queryWorkflows<{ cnt: number }>('SELECT COUNT(*) as cnt FROM engineering_standards WHERE is_active = 1'),
-      db.queryWorkflows<{ domain: string; cnt: number }>(
-        'SELECT domain, COUNT(*) as cnt FROM equations WHERE is_active = 1 GROUP BY domain ORDER BY cnt DESC'
-      ),
-      db.queryWorkflows<{ domain: string; cnt: number }>(
-        'SELECT domain, COUNT(*) as cnt FROM calculation_pipelines WHERE is_active = 1 GROUP BY domain ORDER BY cnt DESC'
-      ),
+    // Fetch all counts from Prisma in parallel
+    const [
+      equationCount,
+      pipelineCount,
+      categoryCount,
+      courseCount,
+      moduleCount,
+      lessonCount,
+      domainDistribution,
+      pipelineDomainDistribution,
+      courseDomainDistribution,
+    ] = await Promise.all([
+      db.equation.count(),
+      db.calculationPipeline.count(),
+      db.equationCategory.count(),
+      db.course.count(),
+      db.courseModule.count(),
+      db.lesson.count(),
+      db.equation.groupBy({ by: ['domain'], _count: { domain: true }, orderBy: { _count: { domain: 'desc' } } }),
+      db.calculationPipeline.groupBy({ by: ['domain'], _count: { domain: true }, orderBy: { _count: { domain: 'desc' } } }),
+      db.course.groupBy({ by: ['domain'], _count: { domain: true }, orderBy: { _count: { domain: 'desc' } } }),
     ])
 
-    // Engmastery DB counts (3.4MB - load separately)
-    let courseCount = 0, moduleCount = 0, lessonCount = 0
-    let courseDomainDist: { discipline: string; cnt: number }[] = []
-    try {
-      const [cc, mc, lc, cdd] = await Promise.all([
-        db.queryEngmastery<{ cnt: number }>('SELECT COUNT(*) as cnt FROM courses'),
-        db.queryEngmastery<{ cnt: number }>('SELECT COUNT(*) as cnt FROM modules'),
-        db.queryEngmastery<{ cnt: number }>('SELECT COUNT(*) as cnt FROM lessons'),
-        db.queryEngmastery<{ discipline: string; cnt: number }>(
-          'SELECT discipline, COUNT(*) as cnt FROM courses GROUP BY discipline ORDER BY cnt DESC'
-        ),
-      ])
-      courseCount = cc[0]?.cnt || 0
-      moduleCount = mc[0]?.cnt || 0
-      lessonCount = lc[0]?.cnt || 0
-      courseDomainDist = cdd
-    } catch (e) {
-      console.error('Engmastery stats error:', e)
-    }
-
-    // Courses DB (31MB - avoid loading just for a count, use cached/hardcoded value)
-    let disciplines = 5 // Known value from DB, avoids loading 31MB file
-    try {
-      const dc = await db.queryCourses<{ cnt: number }>('SELECT COUNT(*) as cnt FROM disciplines WHERE is_active = 1')
-      disciplines = dc[0]?.cnt || 5
-    } catch (e) {
-      // Use fallback value
-    }
+    // No engineering_standards or disciplines tables in Prisma — return 0 / sensible defaults
+    const standards = 0
+    const disciplines = 0
 
     return NextResponse.json({
       success: true,
       data: {
-        equations: eqCount[0]?.cnt || 0,
-        pipelines: pipelineCount[0]?.cnt || 0,
+        equations: equationCount,
+        pipelines: pipelineCount,
         courses: courseCount,
-        categories: categoryCount[0]?.cnt || 0,
+        categories: categoryCount,
         modules: moduleCount,
         lessons: lessonCount,
-        standards: standardCount[0]?.cnt || 0,
+        standards,
         disciplines,
-        domainDistribution: domainDist,
-        pipelineDomainDistribution: pipelineDomainDist,
-        courseDomainDistribution: courseDomainDist,
+        domainDistribution: domainDistribution.map(d => ({ domain: d.domain, cnt: d._count.domain })),
+        pipelineDomainDistribution: pipelineDomainDistribution.map(d => ({ domain: d.domain, cnt: d._count.domain })),
+        courseDomainDistribution: courseDomainDistribution.map(d => ({ discipline: d.domain, cnt: d._count.domain })),
       }
     })
   } catch (error) {

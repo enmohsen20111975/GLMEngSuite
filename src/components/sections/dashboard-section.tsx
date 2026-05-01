@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
-import { useActiveSection } from '@/stores/active-section-store'
+import { useRouter } from 'next/navigation'
 import {
   Calculator, GitBranch, GraduationCap, BarChart3, Workflow,
   ArrowLeftRight, CircuitBoard, FileEdit, Microscope, PenTool, Zap,
@@ -30,7 +30,7 @@ const quickActions = [
 ]
 
 export function DashboardSection() {
-  const { setActiveSection } = useActiveSection()
+  const router = useRouter()
   const [stats, setStats] = useState<Stats | null>(null)
   const [loading, setLoading] = useState(true)
 
@@ -89,7 +89,7 @@ export function DashboardSection() {
           {quickActions.map(action => (
             <button
               key={action.id}
-              onClick={() => setActiveSection(action.id)}
+              onClick={() => router.push(`/${action.id}`)}
               className="flex flex-col items-center gap-2 p-4 rounded-xl border hover:shadow-md transition-all duration-200 hover:scale-105"
             >
               <div className={`p-3 rounded-xl ${action.color}`}>

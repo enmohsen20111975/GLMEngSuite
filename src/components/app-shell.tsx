@@ -4,6 +4,7 @@ import * as React from 'react'
 import { SidebarNav } from '@/components/sidebar-nav'
 import { Header } from '@/components/header'
 import { Footer } from '@/components/footer'
+import { MobileNav } from '@/components/mobile-nav'
 
 interface AppShellProps {
   children: React.ReactNode
@@ -27,12 +28,13 @@ export function AppShell({ children }: AppShellProps) {
             onToggleSidebar={() => setMobileOpen(!mobileOpen)}
             sidebarOpen={mobileOpen}
           />
-          <main className="flex-1 p-4 lg:p-6">
+          <main className="flex-1 p-4 lg:p-6 pb-20 md:pb-4 lg:pb-6">
             {children}
           </main>
           <Footer />
         </div>
       </div>
+      <MobileNav />
     </div>
   )
 }
