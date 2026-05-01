@@ -1,10 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { db } from '@/lib/db'
 
 export async function GET(request: NextRequest) {
   try {
-    // No report_templates model in Prisma
-    // Return empty array as there is no data source for this
-    return NextResponse.json({ success: true, data: [] })
+    const { searchParams } = new URL(request.url)
+    const category = searchParams.get('category')
+
+    const where: any = {}
+    if (category) where.category = category
+
+    const templates = await db.reportTemplate.findMany({
+      where,
+      orderBy: { name: 'asc' }
+    })
+
+    return NextResponse.json({ success: true, data: templates })
   } catch (error) {
     console.error('Report templates API error:', error)
     return NextResponse.json(

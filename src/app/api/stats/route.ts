@@ -11,6 +11,13 @@ export async function GET() {
       courseCount,
       moduleCount,
       lessonCount,
+      chapterCount,
+      quizCount,
+      standardCount,
+      coefficientCount,
+      reportTemplateCount,
+      engRefCount,
+      unitCount,
       domainDistribution,
       pipelineDomainDistribution,
       courseDomainDistribution,
@@ -21,14 +28,20 @@ export async function GET() {
       db.course.count(),
       db.courseModule.count(),
       db.lesson.count(),
+      db.chapter.count(),
+      db.quiz.count(),
+      db.engineeringStandard.count(),
+      db.standardCoefficient.count(),
+      db.reportTemplate.count(),
+      db.engineeringReferenceData.count(),
+      db.unitConversion.count(),
       db.equation.groupBy({ by: ['domain'], _count: { domain: true }, orderBy: { _count: { domain: 'desc' } } }),
       db.calculationPipeline.groupBy({ by: ['domain'], _count: { domain: true }, orderBy: { _count: { domain: 'desc' } } }),
       db.course.groupBy({ by: ['domain'], _count: { domain: true }, orderBy: { _count: { domain: 'desc' } } }),
     ])
 
-    // No engineering_standards or disciplines tables in Prisma — return 0 / sensible defaults
-    const standards = 0
-    const disciplines = 0
+    // Count distinct disciplines from courses
+    const disciplines = courseDomainDistribution.length
 
     return NextResponse.json({
       success: true,
@@ -39,7 +52,13 @@ export async function GET() {
         categories: categoryCount,
         modules: moduleCount,
         lessons: lessonCount,
-        standards,
+        chapters: chapterCount,
+        quizzes: quizCount,
+        standards: standardCount,
+        coefficients: coefficientCount,
+        reportTemplates: reportTemplateCount,
+        engineeringRefData: engRefCount,
+        unitConversions: unitCount,
         disciplines,
         domainDistribution: domainDistribution.map(d => ({ domain: d.domain, cnt: d._count.domain })),
         pipelineDomainDistribution: pipelineDomainDistribution.map(d => ({ domain: d.domain, cnt: d._count.domain })),

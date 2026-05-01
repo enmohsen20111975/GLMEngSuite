@@ -19,13 +19,21 @@ export async function GET(request: NextRequest) {
       ]
     }
 
-    // Fetch courses with full hierarchy
+    // Fetch courses with full hierarchy (modules → chapters → lessons)
     const courses = await db.course.findMany({
       where,
       include: {
         modules: {
           orderBy: { order: 'asc' },
           include: {
+            chapters: {
+              orderBy: { order: 'asc' },
+              include: {
+                lessons: {
+                  orderBy: { order: 'asc' },
+                },
+              },
+            },
             lessons: {
               orderBy: { order: 'asc' },
             },
@@ -35,11 +43,16 @@ export async function GET(request: NextRequest) {
       orderBy: { order: 'asc' },
     })
 
-    // Map to the format expected by the frontend (which expects the old engmastery.db format)
+    // Map to the format expected by the frontend
     const coursesWithStats = courses.map(course => {
       let totalLessons = 0
-      const modulesWithLessons = course.modules.map(mod => {
-        totalLessons += mod.lessons.length
+      let totalChapters = 0
+      const modulesWithDetails = course.modules.map(mod => {
+        const chapterLessons = mod.chapters.reduce((sum, ch) => sum + ch.lessons.length, 0)
+        const directLessons = mod.lessons.length
+        totalLessons += chapterLessons + directLessons
+        totalChapters += mod.chapters.length
+
         return {
           id: mod.id,
           title: mod.title,
@@ -47,7 +60,26 @@ export async function GET(request: NextRequest) {
           order_index: mod.order,
           duration: mod.duration,
           course_id: mod.courseId,
-          lesson_count: mod.lessons.length,
+          lesson_count: chapterLessons + directLessons,
+          chapter_count: mod.chapters.length,
+          chapters: mod.chapters.map(ch => ({
+            id: ch.id,
+            title: ch.title,
+            order_index: ch.order,
+            lesson_count: ch.lessons.length,
+            lessons: ch.lessons.map(lesson => ({
+              id: lesson.id,
+              title: lesson.title,
+              description: lesson.description,
+              type: lesson.type,
+              content: lesson.content,
+              duration: lesson.duration,
+              order_index: lesson.order,
+              is_free: lesson.isFree,
+              chapter_id: lesson.chapterId,
+            })),
+          })),
+          // Direct lessons (legacy, for modules without chapters)
           lessons: mod.lessons.map(lesson => ({
             id: lesson.id,
             title: lesson.title,
@@ -67,7 +99,8 @@ export async function GET(request: NextRequest) {
         title: course.title,
         slug: course.slug,
         description: course.description,
-        discipline: course.domain,
+        discipline: course.discipline || course.domain,
+        domain: course.domain,
         level: course.level,
         duration: course.duration,
         icon: course.icon,
@@ -76,8 +109,9 @@ export async function GET(request: NextRequest) {
         enrolled: course.enrolled,
         order_index: course.order,
         module_count: course.modules.length,
+        chapter_count: totalChapters,
         lesson_count: totalLessons,
-        modules: modulesWithLessons,
+        modules: modulesWithDetails,
       }
     })
 

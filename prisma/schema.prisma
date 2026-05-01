@@ -21,6 +21,7 @@ model User {
   savedData    UserSavedData[]
 }
 
+// ─── Equation Categories ───
 model EquationCategory {
   id          String    @id @default(cuid())
   name        String
@@ -28,26 +29,34 @@ model EquationCategory {
   icon        String?
   description String?
   domain      String
+  color       String?
+  parentId    String?
   order       Int       @default(0)
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
-  equations Equation[]
+  equations  Equation[]
+  parent     EquationCategory?  @relation("CategoryHierarchy", fields: [parentId], references: [id])
+  children   EquationCategory[] @relation("CategoryHierarchy")
 }
 
+// ─── Equations ───
 model Equation {
-  id          String   @id @default(cuid())
-  name        String
-  slug        String   @unique
-  formula     String
-  description String?
-  category    String
-  domain      String
-  difficulty  String   @default("intermediate")
-  tags        String?
-  reference   String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id               String   @id @default(cuid())
+  equationId       String   @unique   // e.g. "eq_ohms_law"
+  name             String
+  formula          String   // human-readable formula string
+  description      String?
+  domain           String
+  difficulty       String   @default("intermediate")
+  equationLatex    String?  // LaTeX formatted formula
+  equationPattern  String?  // Pattern for bidirectional solving
+  tags             String?  // JSON array string
+  isActive         Boolean  @default(true)
+  category         String?  // Category name (denormalized for quick access)
+  reference        String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
   categoryId String?
   categoryRef EquationCategory? @relation(fields: [categoryId], references: [id])
@@ -56,63 +65,150 @@ model Equation {
 }
 
 model EquationInput {
-  id         String  @id @default(cuid())
-  name       String
-  symbol     String
-  unit       String?
-  defaultVal String?
-  min        String?
-  max        String?
-  step       String?
-  order      Int     @default(0)
+  id              String  @id @default(cuid())
+  name            String
+  symbol          String?
+  description     String?
+  unit            String?
+  unitCategory    String?
+  dataType        String  @default("number")
+  required        Boolean @default(true)
+  defaultVal      String?
+  min             String?
+  max             String?
+  validationRegex String?
+  order           Int     @default(0)
+  placeholder     String?
+  helpText        String?
+  step            String?
 
   equationId String
   equation   Equation @relation(fields: [equationId], references: [id], onDelete: Cascade)
 }
 
 model EquationOutput {
-  id         String  @id @default(cuid())
-  name       String
-  symbol     String
-  unit       String?
-  formula    String?
-  order      Int     @default(0)
+  id            String  @id @default(cuid())
+  name          String
+  symbol        String?
+  description   String?
+  unit          String?
+  unitCategory  String?
+  dataType      String  @default("number")
+  formula       String?
+  order         Int     @default(0)
+  precision     Int     @default(4)
+  formatString  String?
 
   equationId String
   equation   Equation @relation(fields: [equationId], references: [id], onDelete: Cascade)
 }
 
+// ─── Calculation Pipelines ───
 model CalculationPipeline {
-  id          String   @id @default(cuid())
-  name        String
-  slug        String   @unique
-  description String?
-  domain      String
-  category    String?
-  difficulty  String   @default("intermediate")
-  icon        String?
-  tags        String?
-  isLocal     Boolean  @default(false)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id              String   @id @default(cuid())
+  pipelineId      String   @unique  // e.g. "cable_sizing_iec"
+  name            String
+  slug            String   @unique
+  description     String?
+  domain          String
+  category        String?
+  difficulty      String   @default("intermediate")
+  icon            String?
+  tags            String?  // JSON array
+  standardId      String?
+  version         String?
+  estimatedTime   String?
+  isActive        Boolean  @default(true)
+  isLocal         Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
-  steps PipelineStep[]
+  steps        PipelineStep[]
+  dependencies PipelineDependency[] @relation("PipelineDeps")
 }
 
 model PipelineStep {
-  id          String  @id @default(cuid())
-  name        String
-  description String?
-  order       Int
-  formula     String?
-  inputSchema String?
-  outputSchema String?
-  helperText  String?
+  id               String  @id @default(cuid())
+  stepId           String? // e.g. "step_1"
+  name             String
+  description      String?
+  order            Int
+  formula          String?
+  formulaRef       String? // Reference to equation
+  inputConfig      String? // JSON
+  outputConfig     String? // JSON
+  inputSchema      String? // JSON (legacy)
+  outputSchema     String? // JSON (legacy)
+  helperText       String?
+  calculationType  String?
+  stepType         String?
+  precision        Int?
+  validationConfig String? // JSON
 
   pipelineId String
   pipeline   CalculationPipeline @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+
+  stepDependencies   PipelineDependency[] @relation("StepDependency")
+  dependsOnRelations PipelineDependency[] @relation("DependsOnStep")
 }
 
+model PipelineDependency {
+  id           String  @id @default(cuid())
+  inputMapping String? // JSON
+
+  pipelineId     String
+  stepId         String
+  dependsOnId    String
+
+  pipeline      CalculationPipeline @relation("PipelineDeps", fields: [pipelineId], references: [id], onDelete: Cascade)
+  step          PipelineStep        @relation("StepDependency", fields: [stepId], references: [id], onDelete: Cascade)
+  dependsOnStep PipelineStep        @relation("DependsOnStep", fields: [dependsOnId], references: [id], onDelete: Cascade)
+}
+
+// ─── Engineering Standards ───
+model EngineeringStandard {
+  id           String   @id @default(cuid())
+  standardCode String   @unique
+  name         String
+  description  String?
+  standardType String
+  domain       String
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  coefficients StandardCoefficient[]
+}
+
+model StandardCoefficient {
+  id               String  @id @default(cuid())
+  coefficientName  String
+  coefficientType  String
+  dataSource       String
+  coefficientTable String? // JSON
+  formula          String?
+  externalReference String?
+
+  standardId String
+  standard   EngineeringStandard @relation(fields: [standardId], references: [id], onDelete: Cascade)
+}
+
+// ─── Report Templates ───
+model ReportTemplate {
+  id           String   @id @default(cuid())
+  name         String
+  slug         String   @unique
+  description  String?
+  category     String?
+  templateType String   @default("technical")
+  sections     String?  // JSON
+  styling      String?  // JSON
+  isPublic     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+// ─── Calculation History ───
 model CalculationHistory {
   id         String   @id @default(cuid())
   equationId String?
@@ -126,12 +222,14 @@ model CalculationHistory {
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
+// ─── Courses (from engmastery.db) ───
 model Course {
   id          String   @id @default(cuid())
   title       String
   slug        String   @unique
   description String?
   domain      String
+  discipline  String?
   level       String   @default("beginner")
   duration    String?
   icon        String?
@@ -155,6 +253,17 @@ model CourseModule {
   courseId String
   course   Course  @relation(fields: [courseId], references: [id], onDelete: Cascade)
   lessons Lesson[]
+  chapters Chapter[]
+}
+
+model Chapter {
+  id          String  @id @default(cuid())
+  title       String
+  order       Int
+
+  moduleId String
+  module   CourseModule @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  lessons Lesson[]
 }
 
 model Lesson {
@@ -167,10 +276,22 @@ model Lesson {
   order       Int
   isFree      Boolean @default(true)
 
-  moduleId String
-  module   CourseModule @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  moduleId  String?
+  module    CourseModule?  @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  chapterId String?
+  chapter   Chapter?       @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  quizzes   Quiz[]
 }
 
+model Quiz {
+  id        String  @id @default(cuid())
+  questions String  // JSON array of questions
+
+  lessonId String
+  lesson   Lesson  @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+}
+
+// ─── User Saved Data ───
 model UserSavedData {
   id        String   @id @default(cuid())
   key       String
@@ -184,6 +305,7 @@ model UserSavedData {
   @@unique([userId, key])
 }
 
+// ─── Unit Conversions ───
 model UnitConversion {
   id         String  @id @default(cuid())
   category   String
@@ -195,6 +317,7 @@ model UnitConversion {
   toSymbol   String?
 }
 
+// ─── Engineering Reference Data (from Excel sheets) ───
 model EngineeringReferenceData {
   id          String  @id @default(cuid())
   category    String  // e.g. "cable_impedance", "xlpe_library", "motor_ratings", "busbar_derating"

@@ -7,18 +7,18 @@ import initSqlJs, { type Database as SqlJsDatabase } from 'sql.js'
 import fs from 'fs'
 import path from 'path'
 
-// Database file paths
+// Database file paths (moved from upload/ to db/ for safe keeping)
 const DB_PATHS = {
-  courses: path.resolve(process.cwd(), 'upload/Databases_extracted/Databases/courses.db'),
-  workflows: path.resolve(process.cwd(), 'upload/Databases_extracted/Databases/workflows.db'),
-  engmastery: path.resolve(process.cwd(), 'upload/Databases_extracted/Databases/engmastery.db'),
+  workflows: path.resolve(process.cwd(), 'db/workflows.db'),
+  engmastery: path.resolve(process.cwd(), 'db/engmastery.db'),
+  users: path.resolve(process.cwd(), 'db/users.db'),
 }
 
 // Singleton instances - cached after first load
 let sqlModule: any = null
-let coursesDb: SqlJsDatabase | null = null
 let workflowsDb: SqlJsDatabase | null = null
 let engmasteryDb: SqlJsDatabase | null = null
+let usersDb: SqlJsDatabase | null = null
 
 /**
  * Get the sql.js module (initialize once)
@@ -63,13 +63,13 @@ export function saveDatabases(): void {
       const data = workflowsDb.export()
       fs.writeFileSync(DB_PATHS.workflows, Buffer.from(data))
     }
-    if (coursesDb && fs.existsSync(path.dirname(DB_PATHS.courses))) {
-      const data = coursesDb.export()
-      fs.writeFileSync(DB_PATHS.courses, Buffer.from(data))
-    }
     if (engmasteryDb && fs.existsSync(path.dirname(DB_PATHS.engmastery))) {
       const data = engmasteryDb.export()
       fs.writeFileSync(DB_PATHS.engmastery, Buffer.from(data))
+    }
+    if (usersDb && fs.existsSync(path.dirname(DB_PATHS.users))) {
+      const data = usersDb.export()
+      fs.writeFileSync(DB_PATHS.users, Buffer.from(data))
     }
   } catch (error) {
     console.error('Error saving databases:', error)
@@ -77,13 +77,6 @@ export function saveDatabases(): void {
 }
 
 // Database getters (cached lazy-load)
-export async function getCoursesDb(): Promise<SqlJsDatabase> {
-  if (!coursesDb) {
-    coursesDb = await loadDb(DB_PATHS.courses)
-  }
-  return coursesDb
-}
-
 export async function getWorkflowsDb(): Promise<SqlJsDatabase> {
   if (!workflowsDb) {
     workflowsDb = await loadDb(DB_PATHS.workflows)
@@ -96,6 +89,13 @@ export async function getEngmasteryDb(): Promise<SqlJsDatabase> {
     engmasteryDb = await loadDb(DB_PATHS.engmastery)
   }
   return engmasteryDb
+}
+
+export async function getUsersDb(): Promise<SqlJsDatabase> {
+  if (!usersDb) {
+    usersDb = await loadDb(DB_PATHS.users)
+  }
+  return usersDb
 }
 
 /**
@@ -141,14 +141,6 @@ export function execute(db: SqlJsDatabase, sql: string, params: unknown[] = []):
  * Database Service class - async convenience wrapper
  */
 class DatabaseService {
-  async queryCourses<T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T[]> {
-    return query<T>(await getCoursesDb(), sql, params)
-  }
-
-  async queryOneCourse<T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T | undefined> {
-    return queryOne<T>(await getCoursesDb(), sql, params)
-  }
-
   async queryWorkflows<T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T[]> {
     return query<T>(await getWorkflowsDb(), sql, params)
   }
@@ -165,16 +157,24 @@ class DatabaseService {
     return queryOne<T>(await getEngmasteryDb(), sql, params)
   }
 
+  async queryUsers<T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T[]> {
+    return query<T>(await getUsersDb(), sql, params)
+  }
+
+  async queryOneUser<T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T | undefined> {
+    return queryOne<T>(await getUsersDb(), sql, params)
+  }
+
   async executeWorkflows(sql: string, params: unknown[] = []) {
     return execute(await getWorkflowsDb(), sql, params)
   }
 
-  async executeCourses(sql: string, params: unknown[] = []) {
-    return execute(await getCoursesDb(), sql, params)
-  }
-
   async executeEngmastery(sql: string, params: unknown[] = []) {
     return execute(await getEngmasteryDb(), sql, params)
+  }
+
+  async executeUsers(sql: string, params: unknown[] = []) {
+    return execute(await getUsersDb(), sql, params)
   }
 }
 
