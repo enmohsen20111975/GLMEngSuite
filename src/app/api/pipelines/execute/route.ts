@@ -79,6 +79,7 @@ export async function POST(request: NextRequest) {
         OR: [
           { id: pipelineId },
           { slug: pipelineId },
+          { pipelineId: pipelineId },
         ]
       },
       include: { steps: { orderBy: { order: 'asc' } } },

@@ -60,7 +60,7 @@ export async function GET(request: NextRequest) {
       where: {
         OR: [
           { id: equationId },
-          { slug: equationId },
+          { equationId: equationId },
         ]
       },
       include: {
@@ -95,7 +95,7 @@ export async function GET(request: NextRequest) {
 
     const info: EquationInfo = {
       id: equation.id,
-      equation_id: equation.slug,
+      equation_id: equation.equationId,
       name: equation.name,
       formula: equation.formula || null,
       equation_latex: null,
@@ -148,7 +148,7 @@ export async function POST(request: NextRequest) {
         where: {
           OR: [
             { id: String(equation_id) },
-            { slug: String(equation_id) },
+            { equationId: String(equation_id) },
           ]
         },
         include: {

@@ -47,6 +47,7 @@ export async function GET(
         OR: [
           { id: id },
           { slug: id },
+          { pipelineId: id },
         ]
       },
       include: { steps: { orderBy: { order: 'asc' } } },
@@ -63,7 +64,7 @@ export async function GET(
       success: true,
       data: {
         id: pipeline.id,
-        pipeline_id: pipeline.slug,
+        pipeline_id: pipeline.pipelineId,
         name: pipeline.name,
         description: pipeline.description,
         domain: pipeline.domain,

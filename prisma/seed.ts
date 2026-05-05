@@ -73,7 +73,7 @@ async function main() {
   const ohmsLaw = await prisma.equation.create({
     data: {
       name: "Ohm's Law",
-      slug: 'ohms-law',
+      equationId: 'ohms-law',
       formula: 'V = I * R',
       description: 'Relates voltage, current, and resistance in an electrical circuit. One of the most fundamental equations in electrical engineering.',
       category: 'Electrical Engineering',
@@ -100,7 +100,7 @@ async function main() {
   const powerLaw = await prisma.equation.create({
     data: {
       name: 'Power Law',
-      slug: 'power-law',
+      equationId: 'power-law',
       formula: 'P = V * I',
       description: 'Calculates electrical power from voltage and current. Fundamental for power system analysis and circuit design.',
       category: 'Electrical Engineering',
@@ -127,7 +127,7 @@ async function main() {
   const cableVoltageDrop = await prisma.equation.create({
     data: {
       name: 'Cable Voltage Drop',
-      slug: 'cable-voltage-drop',
+      equationId: 'cable-voltage-drop',
       formula: 'Vd = (2 * L * I * R) / 1000',
       description: 'Calculates the voltage drop across a cable given its length, current, and resistance per kilometer. Essential for cable sizing and ensuring equipment receives adequate voltage.',
       category: 'Electrical Engineering',
@@ -155,7 +155,7 @@ async function main() {
   const powerFactor = await prisma.equation.create({
     data: {
       name: 'Power Factor',
-      slug: 'power-factor',
+      equationId: 'power-factor',
       formula: 'PF = P / (V * I)',
       description: 'Calculates the power factor of an AC electrical system. Power factor indicates how effectively electrical power is being converted to useful work.',
       category: 'Electrical Engineering',
@@ -183,7 +183,7 @@ async function main() {
   const threePhasePower = await prisma.equation.create({
     data: {
       name: 'Three-Phase Power',
-      slug: 'three-phase-power',
+      equationId: 'three-phase-power',
       formula: 'P = sqrt(3) * V * I * PF',
       description: 'Calculates total active power in a three-phase AC system. The most common power calculation for industrial and commercial electrical systems.',
       category: 'Electrical Engineering',
@@ -212,7 +212,7 @@ async function main() {
   const stress = await prisma.equation.create({
     data: {
       name: 'Stress',
-      slug: 'stress',
+      equationId: 'stress',
       formula: 'σ = F / A',
       description: 'Calculates mechanical stress as force per unit area. Stress analysis is fundamental to mechanical design and structural integrity assessment.',
       category: 'Mechanical Engineering',
@@ -239,7 +239,7 @@ async function main() {
   const strain = await prisma.equation.create({
     data: {
       name: 'Strain',
-      slug: 'strain',
+      equationId: 'strain',
       formula: 'ε = ΔL / L',
       description: 'Calculates engineering strain as the ratio of change in length to original length. A dimensionless quantity used in material deformation analysis.',
       category: 'Mechanical Engineering',
@@ -266,7 +266,7 @@ async function main() {
   const beamDeflection = await prisma.equation.create({
     data: {
       name: 'Beam Deflection (Simply Supported, Center Load)',
-      slug: 'beam-deflection-simply-supported',
+      equationId: 'beam-deflection-simply-supported',
       formula: 'δ = (F * L³) / (48 * E * I)',
       description: 'Calculates maximum deflection of a simply supported beam with a center point load. Used in structural and mechanical design to ensure deflection stays within acceptable limits.',
       category: 'Mechanical Engineering',
@@ -295,7 +295,7 @@ async function main() {
   const reynoldsNumber = await prisma.equation.create({
     data: {
       name: 'Reynolds Number',
-      slug: 'reynolds-number',
+      equationId: 'reynolds-number',
       formula: 'Re = (ρ * v * D) / μ',
       description: 'Calculates the Reynolds number, a dimensionless quantity used to predict flow patterns (laminar vs turbulent). Critical for fluid mechanics and heat transfer analysis.',
       category: 'Mechanical Engineering',
@@ -324,7 +324,7 @@ async function main() {
   const torque = await prisma.equation.create({
     data: {
       name: 'Torque',
-      slug: 'torque',
+      equationId: 'torque',
       formula: 'T = F * r',
       description: 'Calculates torque as the product of force and the perpendicular distance from the axis of rotation. Fundamental in machine design and power transmission.',
       category: 'Mechanical Engineering',
@@ -352,7 +352,7 @@ async function main() {
   const concreteMixRatio = await prisma.equation.create({
     data: {
       name: 'Concrete Water-Cement Ratio',
-      slug: 'concrete-water-cement-ratio',
+      equationId: 'concrete-water-cement-ratio',
       formula: 'w/c = W / C',
       description: 'Calculates the water-cement ratio, a key parameter in concrete mix design that directly affects strength and workability. Lower w/c ratios produce stronger but less workable concrete.',
       category: 'Civil Engineering',
@@ -379,7 +379,7 @@ async function main() {
   const soilBearingCapacity = await prisma.equation.create({
     data: {
       name: 'Soil Bearing Capacity (Simplified)',
-      slug: 'soil-bearing-capacity',
+      equationId: 'soil-bearing-capacity',
       formula: 'q_ult = c*Nc + γ*Df*Nq + 0.5*γ*B*Nγ',
       description: 'Calculates the ultimate bearing capacity of soil using Terzaghi\'s simplified equation. Used in foundation design to ensure the soil can support the structure\'s load.',
       category: 'Civil Engineering',
@@ -411,7 +411,7 @@ async function main() {
   const beamMoment = await prisma.equation.create({
     data: {
       name: 'Beam Bending Moment (Uniform Load)',
-      slug: 'beam-bending-moment',
+      equationId: 'beam-bending-moment',
       formula: 'M = (w * L²) / 8',
       description: 'Calculates the maximum bending moment for a simply supported beam with a uniformly distributed load. Used in structural design to determine required section properties.',
       category: 'Civil Engineering',
@@ -439,7 +439,7 @@ async function main() {
   const sensibleHeat = await prisma.equation.create({
     data: {
       name: 'Sensible Heat',
-      slug: 'sensible-heat',
+      equationId: 'sensible-heat',
       formula: 'Q = 1.08 * CFM * ΔT',
       description: 'Calculates sensible heat in BTU/hr using the standard HVAC formula. Used for heating and cooling load calculations in Imperial units.',
       category: 'HVAC Engineering',
@@ -466,7 +466,7 @@ async function main() {
   const coolingLoad = await prisma.equation.create({
     data: {
       name: 'Cooling Load',
-      slug: 'cooling-load',
+      equationId: 'cooling-load',
       formula: 'Q = m * Cp * ΔT',
       description: 'Calculates cooling load using mass flow rate, specific heat capacity, and temperature difference. A fundamental equation for HVAC system sizing in SI units.',
       category: 'HVAC Engineering',
@@ -494,7 +494,7 @@ async function main() {
   const airChangesPerHour = await prisma.equation.create({
     data: {
       name: 'Air Changes per Hour',
-      slug: 'air-changes-per-hour',
+      equationId: 'air-changes-per-hour',
       formula: 'ACH = (CFM * 60) / Volume',
       description: 'Calculates the air changes per hour, a measure of how many times the air within a room is replaced per hour. Important for ventilation design and indoor air quality assessment.',
       category: 'HVAC Engineering',
@@ -522,7 +522,7 @@ async function main() {
   const flowRate = await prisma.equation.create({
     data: {
       name: 'Flow Rate (Continuity)',
-      slug: 'flow-rate',
+      equationId: 'flow-rate',
       formula: 'Q = A * v',
       description: 'Calculates volumetric flow rate from cross-sectional area and flow velocity. Based on the continuity equation, fundamental in fluid mechanics.',
       category: 'Hydraulic Engineering',
@@ -549,7 +549,7 @@ async function main() {
   const hydraulicPressure = await prisma.equation.create({
     data: {
       name: 'Hydraulic Pressure',
-      slug: 'hydraulic-pressure',
+      equationId: 'hydraulic-pressure',
       formula: 'P = F / A',
       description: 'Calculates pressure as force per unit area. The basis of Pascal\'s law and hydraulic systems design.',
       category: 'Hydraulic Engineering',
@@ -576,7 +576,7 @@ async function main() {
   const bernoulli = await prisma.equation.create({
     data: {
       name: 'Bernoulli Equation (Simplified)',
-      slug: 'bernoulli-equation',
+      equationId: 'bernoulli-equation',
       formula: 'P1 + 0.5*ρ*v1² = P2 + 0.5*ρ*v2²',
       description: 'Simplified Bernoulli equation neglecting elevation changes. Relates pressure and velocity between two points in a steady, incompressible flow. Fundamental for pipe flow analysis and flow measurement.',
       category: 'Hydraulic Engineering',
@@ -606,7 +606,7 @@ async function main() {
   const idealGasLaw = await prisma.equation.create({
     data: {
       name: 'Ideal Gas Law',
-      slug: 'ideal-gas-law',
+      equationId: 'ideal-gas-law',
       formula: 'PV = nRT',
       description: 'The ideal gas law relates pressure, volume, amount of gas, and temperature. R is the universal gas constant (8.314 J/mol·K). One of the most important equations in thermodynamics.',
       category: 'Thermodynamics',
@@ -634,7 +634,7 @@ async function main() {
   const carnotEfficiency = await prisma.equation.create({
     data: {
       name: 'Carnot Efficiency',
-      slug: 'carnot-efficiency',
+      equationId: 'carnot-efficiency',
       formula: 'η = 1 - (Tc / Th)',
       description: 'Calculates the maximum theoretical efficiency of a heat engine operating between two temperatures. Sets the upper limit for any real engine efficiency.',
       category: 'Thermodynamics',
@@ -662,7 +662,7 @@ async function main() {
   const molarity = await prisma.equation.create({
     data: {
       name: 'Molarity',
-      slug: 'molarity',
+      equationId: 'molarity',
       formula: 'M = n / V',
       description: 'Calculates molar concentration (molarity) as moles of solute per liter of solution. A fundamental concept in chemical engineering and analytical chemistry.',
       category: 'Chemical Engineering',
@@ -689,7 +689,7 @@ async function main() {
   const massTransferRate = await prisma.equation.create({
     data: {
       name: 'Mass Transfer Rate',
-      slug: 'mass-transfer-rate',
+      equationId: 'mass-transfer-rate',
       formula: 'N = k * A * ΔC',
       description: 'Calculates the mass transfer rate using the mass transfer coefficient, interfacial area, and concentration difference. Key in separation processes and reactor design.',
       category: 'Chemical Engineering',
@@ -725,6 +725,7 @@ async function main() {
   const cableSizingPipeline = await prisma.calculationPipeline.create({
     data: {
       name: 'Cable Sizing & Voltage Drop',
+      pipelineId: 'cable-sizing-voltage-drop',
       slug: 'cable-sizing-voltage-drop',
       description: 'Complete cable sizing procedure including load current calculation, cable selection, voltage drop verification, short circuit rating check, and final cable specification.',
       domain: 'electrical',
@@ -749,6 +750,7 @@ async function main() {
   const powerFactorPipeline = await prisma.calculationPipeline.create({
     data: {
       name: 'Power Factor Correction',
+      pipelineId: 'power-factor-correction',
       slug: 'power-factor-correction',
       description: 'Step-by-step procedure for calculating and correcting power factor in industrial installations using capacitor banks.',
       domain: 'electrical',
@@ -772,6 +774,7 @@ async function main() {
   const beamDesignPipeline = await prisma.calculationPipeline.create({
     data: {
       name: 'Beam Design',
+      pipelineId: 'beam-design',
       slug: 'beam-design',
       description: 'Complete beam design procedure from load determination through section selection and deflection checking.',
       domain: 'mechanical',
@@ -795,6 +798,7 @@ async function main() {
   const coolingLoadPipeline = await prisma.calculationPipeline.create({
     data: {
       name: 'Cooling Load Calculation',
+      pipelineId: 'cooling-load-calculation',
       slug: 'cooling-load-calculation',
       description: 'Comprehensive cooling load calculation procedure following ASHRAE methods for HVAC system design.',
       domain: 'hvac',
@@ -819,6 +823,7 @@ async function main() {
   const pipeSizingPipeline = await prisma.calculationPipeline.create({
     data: {
       name: 'Pipe Sizing',
+      pipelineId: 'pipe-sizing',
       slug: 'pipe-sizing',
       description: 'Systematic pipe sizing procedure including flow rate determination, diameter calculation, pressure loss analysis, and specification selection.',
       domain: 'hydraulic',
@@ -842,6 +847,7 @@ async function main() {
   const foundationDesignPipeline = await prisma.calculationPipeline.create({
     data: {
       name: 'Foundation Design',
+      pipelineId: 'foundation-design',
       slug: 'foundation-design',
       description: 'Complete shallow foundation design procedure from soil investigation through bearing capacity and settlement verification.',
       domain: 'civil',

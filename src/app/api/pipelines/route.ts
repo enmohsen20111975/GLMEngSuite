@@ -29,7 +29,7 @@ export async function GET(request: NextRequest) {
 
     const dbPipelineData = dbPipelines.map(p => ({
       id: p.id,
-      pipeline_id: p.slug,
+      pipeline_id: p.pipelineId,
       name: p.name,
       description: p.description,
       domain: p.domain,
