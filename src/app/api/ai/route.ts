@@ -18,8 +18,37 @@ Domains you specialize in:
 
 Always provide clear, step-by-step explanations with proper units. Reference relevant standards when applicable. If you're unsure, say so rather than guessing.`
 
-// In-memory conversation store (in production, use a database)
-const conversations = new Map<string, Array<{ role: string; content: string }>>()
+/**
+ * Bounded LRU conversation cache with TTL (30 min, max 50 entries).
+ * Prevents unbounded memory growth from abandoned sessions.
+ */
+const MAX_CONVERSATIONS = 50
+const TTL_MS = 30 * 60 * 1000 // 30 minutes
+
+interface CacheEntry {
+  history: Array<{ role: string; content: string }>
+  lastAccess: number
+}
+
+const conversations = new Map<string, CacheEntry>()
+
+function cleanupConversations(): void {
+  const now = Date.now()
+  // Remove expired entries
+  for (const [key, entry] of conversations) {
+    if (now - entry.lastAccess > TTL_MS) {
+      conversations.delete(key)
+    }
+  }
+  // Evict oldest entries if still over limit
+  if (conversations.size > MAX_CONVERSATIONS) {
+    const entries = [...conversations.entries()].sort((a, b) => a[1].lastAccess - b[1].lastAccess)
+    const evictCount = conversations.size - MAX_CONVERSATIONS
+    for (let i = 0; i < evictCount; i++) {
+      conversations.delete(entries[i][0])
+    }
+  }
+}
 
 let zaiInstance: Awaited<ReturnType<typeof ZAI.create>> | null = null
 
@@ -43,7 +72,8 @@ export async function POST(request: NextRequest) {
 
     // Get or create conversation history
     const key = sessionId || 'default'
-    let history = conversations.get(key) || [
+    const entry = conversations.get(key)
+    let history = entry?.history || [
       { role: 'assistant', content: systemPrompt || SYSTEM_PROMPT }
     ]
 
@@ -66,8 +96,11 @@ export async function POST(request: NextRequest) {
     // Add AI response to history
     history.push({ role: 'assistant', content: aiResponse })
 
-    // Save updated history
-    conversations.set(key, history)
+    // Save updated history with access time
+    conversations.set(key, { history, lastAccess: Date.now() })
+
+    // Periodic cleanup of expired / oversized cache
+    cleanupConversations()
 
     return NextResponse.json({
       response: aiResponse,
@@ -86,6 +119,7 @@ export async function DELETE(request: NextRequest) {
     const sessionId = searchParams.get('sessionId')
     if (sessionId) {
       conversations.delete(sessionId)
+      cleanupConversations()
     }
     return NextResponse.json({ success: true })
   } catch (error) {
